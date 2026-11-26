@@ -42,7 +42,7 @@ dịch vụ phân phối của Google.
 ## Cài đặt
 
 Yêu cầu **Node.js 22+** và một MyTestflightServer truy cập được qua http(s). Management key nằm
-trong `data/config.json` của server; đọc bằng
+trong `data/config.json` của server; từ thư mục chứa `data/`, đọc bằng
 `node -p 'require("./data/config.json").management_key'`, hoặc
 `docker compose exec -T server cat /data/config.json`.
 
@@ -146,8 +146,8 @@ Danh sách đầy đủ mọi lệnh và cờ:
 - **ABI** được chọn theo thứ tự: `--abi` → native library trong APK (`lib/<abi>/`) → token trong
   tên file → `universal`.
 - Version mới được tạo dạng **draft**; nó chỉ xuất hiện trong catalog công khai sau APK đầu tiên.
-- Draft nhận thêm ABI mà không cần `--force`. Version đã publish, hoặc metadata thay đổi, cần
-  `--force`/`--yes` hay xác nhận trong terminal.
+- Draft nhận thêm ABI mà không cần `--force`. Version đã publish **có artifact cùng ABI**, hoặc
+  metadata thay đổi, cần `--force`/`--yes` hay xác nhận trong terminal.
 - `universal` luôn là artifact mặc định; mỗi ABI tối đa một APK.
 - Chạy lại sau lỗi giữa chừng với `--force` sẽ hoàn tất và thay các artifact đã upload bằng cùng
   nội dung.
