@@ -24,6 +24,7 @@ node -p "require('./release.json').version.abis.join(',')"
 
 ```yaml
 - name: Publish to MyTestflight
+  # First publish of a version needs no --force; re-running the same version does.
   run: |
     npx --yes my-testflight-cli@latest release crm \
       app/build/outputs/apk/release/app-arm64-v8a.apk \

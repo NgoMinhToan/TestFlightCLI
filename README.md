@@ -4,6 +4,9 @@ Client terminal và CI cho **[MyTestflightServer](https://github.com/NgoMinhToan
 — máy chủ catalog APK Android tự host. Đẩy APK theo từng kiến trúc (ABI) hoặc bản universal, xem
 ứng dụng/phiên bản và tải bản phát hành mà không cần viết curl hay mở dashboard.
 
+> **In English:** a terminal and CI client for MyTestflightServer — publish Android APKs per ABI or
+> universal, inspect apps and versions, verify checksums and download builds. Requires Node 22+.
+
 [![npm version](https://img.shields.io/npm/v/my-testflight-cli?label=npm)](https://www.npmjs.com/package/my-testflight-cli)
 [![Node](https://img.shields.io/node/v/my-testflight-cli?label=node)](https://www.npmjs.com/package/my-testflight-cli)
 [![CI](https://github.com/NgoMinhToan/TestFlightCLI/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NgoMinhToan/TestFlightCLI/actions/workflows/ci.yml)
@@ -21,30 +24,35 @@ arm64-v8a  42.0 MB  5e049e50d94a
 → Download: http://127.0.0.1:8080/api/v1/apps/crm/versions/1.4.2/download
 ```
 
+`sha256` trong output được rút gọn còn 12 ký tự; bản đầy đủ có trong `--json` và `versions get`.
+
 ## Vì sao dùng CLI này
 
 - **Cùng một API với dashboard và app Android.** Mọi thứ đẩy bằng CLI hiện ngay trong catalog của
   app và dashboard; không có định dạng dữ liệu riêng.
 - **Một lệnh thay cho chuỗi curl.** `release` tạo version, tự nhận ABI từ `lib/<abi>/` (hoặc tên
-  file), upload từng artifact và đối chiếu SHA-256 do server trả về. Không có runtime dependency,
-  chỉ cần Node 22+.
+  file), upload từng artifact và đối chiếu SHA-256 do server trả về. Không có dependency npm
+  runtime; chỉ cần Node 22+.
 - **Không ghi đè âm thầm.** Bản đã publish chỉ bị thay khi có `--force`/`--yes`, hoặc khi bạn xác
   nhận trong terminal. `--dry-run` in kế hoạch trước khi gửi.
-- **Sẵn cho CI.** `--json`, exit code `0`/`1`/`2`/`130`, cấu hình qua `TESTFLIGHT_BASE_URL` và
-  `TESTFLIGHT_MANAGEMENT_KEY`, không cần bước login.
+- **Sẵn cho CI.** `--json`, exit code `0` thành công / `1` lỗi server hoặc mạng / `2` sai cú pháp /
+  `130` bị huỷ; cấu hình qua `TESTFLIGHT_BASE_URL` và `TESTFLIGHT_MANAGEMENT_KEY`, không cần bước
+  login.
 
 **Khi nào nên dùng thứ khác:** cần quản lý trực quan, icon và metadata hàng loạt → dùng
 [dashboard](https://github.com/NgoMinhToan/MyTestflightDashboard); chỉ upload một lần bằng `curl` →
 gọi thẳng [write API](https://github.com/NgoMinhToan/MyTestflightServer#write-api); cần Google
-Play hoặc Firebase App Distribution → CLI này chỉ nói chuyện với MyTestflightServer, không thay thế
-dịch vụ phân phối của Google.
+Play, Fastlane hoặc Gradle Play Publisher → dùng các công cụ đó; CLI này chỉ nói chuyện với
+MyTestflightServer và không thay thế dịch vụ phân phối của Google.
 
 ## Cài đặt
 
-Yêu cầu **Node.js 22+** và một MyTestflightServer truy cập được qua http(s). Management key nằm
-trong `data/config.json` của server; từ thư mục chứa `data/`, đọc bằng
+Yêu cầu **Node.js 22+** trên macOS, Linux hoặc Windows, và một MyTestflightServer truy cập được
+qua http(s). Management key nằm trong `data/config.json` của server; từ thư mục chứa `data/`, đọc
+bằng
 `node -p 'require("./data/config.json").management_key'`, hoặc
-`docker compose exec -T server cat /data/config.json`.
+`docker compose exec -T server cat /data/config.json`. Nếu không truyền `--key`, `login` sẽ hỏi key
+(ẩn khi nhập) và kiểm tra trước khi lưu.
 
 ```bash
 npm install -g my-testflight-cli
@@ -84,12 +92,13 @@ testflight versions abis crm 1.4.2
 testflight download crm 1.4.2 --out ./builds
 ```
 
+Nếu server trả `X-Checksum-Sha256`, `download` kiểm tra checksum trước khi ghi file.
 `testflight doctor` kiểm tra Node, file cấu hình, kết nối server và key chỉ trong một lệnh.
 
 ## Cấu hình
 
 `login` lưu base URL + key vào profile trong `~/.config/testflight/config.json` (Windows:
-`%APPDATA%\testflight\config.json`; quyền `0600`).
+`%APPDATA%\testflight\config.json`; quyền `0600` trên macOS/Linux).
 Nhiều môi trường dùng `--profile`:
 
 ```bash
@@ -143,20 +152,22 @@ Danh sách đầy đủ mọi lệnh và cờ:
 
 ## Release hoạt động thế nào
 
-- **ABI** được chọn theo thứ tự: `--abi` → native library trong APK (`lib/<abi>/`) → token trong
-  tên file → `universal`.
+- **ABI** được chọn theo thứ tự: `--abi` → native library trong APK (`lib/<abi>/`) → chuỗi ABI
+  trong tên file (ví dụ `app-arm64-v8a.apk`, không phân biệt hoa thường) → `universal`. ABI hỗ trợ:
+  `universal`, `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`, `riscv64`, `armeabi`.
 - Version mới được tạo dạng **draft**; nó chỉ xuất hiện trong catalog công khai sau APK đầu tiên.
 - Draft nhận thêm ABI mà không cần `--force`. Version đã publish **có artifact cùng ABI**, hoặc
   metadata thay đổi, cần `--force`/`--yes` hay xác nhận trong terminal.
-- `universal` luôn là artifact mặc định; mỗi ABI tối đa một APK.
+- `universal` luôn là artifact mặc định khi tải mà không chỉ định `--abi`; mỗi ABI tối đa một APK.
 - Chạy lại sau lỗi giữa chừng với `--force` sẽ hoàn tất và thay các artifact đã upload bằng cùng
   nội dung.
 
 ## Trạng thái
 
 Phiên bản hiện tại **0.1.1** (2026-11-26). Đây là bản phát hành sớm: lệnh và cờ có thể thay
-đổi trước `1.0`. CI chạy typecheck, test và build trên Node 22 và 24; các bản npm được publish kèm
-provenance. Theo dõi [Releases](https://github.com/NgoMinhToan/TestFlightCLI/releases).
+đổi trước `1.0`. CLI 0.1.x nhắm tới API `/api/v1` hiện hành của MyTestflightServer. CI chạy
+typecheck, test và build trên Node 22 và 24; các bản npm được publish kèm provenance. Theo dõi
+[Releases](https://github.com/NgoMinhToan/TestFlightCLI/releases).
 
 ## Tài liệu và dự án liên quan
 
@@ -173,4 +184,6 @@ provenance. Theo dõi [Releases](https://github.com/NgoMinhToan/TestFlightCLI/re
 
 ## Giấy phép
 
-MIT — xem [LICENSE](https://github.com/NgoMinhToan/TestFlightCLI/blob/main/LICENSE).
+MIT — xem [LICENSE](https://github.com/NgoMinhToan/TestFlightCLI/blob/main/LICENSE). CLI cần một
+MyTestflightServer; server, app Android và dashboard là repo riêng, hiện chỉ CLI có file `LICENSE`.
+Không liên kết với Apple; TestFlight là nhãn hiệu của Apple Inc.
