@@ -7,7 +7,12 @@ import { resolveSettings, type ResolvedSettings } from "../config.js";
 import { CliError, UsageError } from "../errors.js";
 import { confirm, isInteractive } from "../prompt.js";
 import { joinUrl } from "../url.js";
-import { isValidId, parsePositiveInteger } from "../validate.js";
+import {
+  isValidId,
+  isValidVersionName,
+  parsePositiveInteger,
+  VERSION_NAME_RULE,
+} from "../validate.js";
 
 export interface CommandClient {
   api: TestflightApi;
@@ -46,6 +51,20 @@ export function requireId(
       `Invalid ${label} "${value}".`,
       "Use letters, digits, dots, dashes or underscores, starting with a letter or digit (max 64 characters).",
     );
+  }
+  return value;
+}
+
+export function requireVersionName(
+  value: string | undefined,
+  label: string,
+  usage: string,
+): string {
+  if (value === undefined || value.length === 0) {
+    throw new UsageError(`Missing ${label}.`, `Usage: ${usage}`);
+  }
+  if (!isValidVersionName(value)) {
+    throw new UsageError(`Invalid ${label} "${value}".`, VERSION_NAME_RULE);
   }
   return value;
 }

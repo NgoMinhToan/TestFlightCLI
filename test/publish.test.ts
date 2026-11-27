@@ -236,6 +236,116 @@ test("publish sends long release notes after the import", async () => {
   }
 });
 
+test("publish omits the version query when the APK uses a versionName reference", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-publish-"));
+  try {
+    const apk = await writeFakeApk(directory, "reference.apk", ["arm64-v8a"], {
+      packageName: "dev.example.reference",
+      versionCode: 42,
+      versionNameReference: true,
+    });
+    const importsBefore = server.imports.length;
+    const result = await run(
+      ["publish", apk, "--app-id", "referenceapp", "--create", "--json"],
+      onlineEnv(directory),
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as {
+      versionName: string | null;
+      versionNameSource: string;
+      version: { versionName: string };
+    };
+    assert.equal(payload.versionNameSource, "server");
+    assert.equal(payload.version.versionName, "42");
+    assert.equal(server.imports.length, importsBefore + 1);
+    const recorded = server.imports.at(-1);
+    assert.equal(recorded?.searchParams.version, undefined);
+    assert.equal(recorded?.searchParams.versionCode, "42");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("publish rejects path-unsafe --version values before contacting the server", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-publish-"));
+  try {
+    const apk = await writeFakeApk(directory, "unsafe.apk", ["arm64-v8a"], {
+      packageName: "dev.example.unsafe",
+      versionCode: 1,
+      versionName: "1.0.0",
+    });
+    const importsBefore = server.imports.length;
+    const result = await run(
+      ["publish", apk, "--app-id", "unsafeapp", "--version", "../escape", "--dry-run"],
+      { TESTFLIGHT_CONFIG: path.join(directory, "does-not-exist.json") },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /Invalid version name/);
+    assert.match(result.stderr, /1-200 UTF-8 bytes/);
+    assert.equal(server.imports.length, importsBefore);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("publish rejects a path-unsafe version name from the APK", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-publish-"));
+  try {
+    const apk = await writeFakeApk(directory, "unsafe-apk.apk", ["arm64-v8a"], {
+      packageName: "dev.example.unsafeapk",
+      versionCode: 1,
+      versionName: "../escape",
+    });
+    const importsBefore = server.imports.length;
+    const result = await run(
+      ["publish", apk, "--app-id", "unsafeapk", "--dry-run"],
+      { TESTFLIGHT_CONFIG: path.join(directory, "does-not-exist.json") },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /Invalid version name/);
+    assert.equal(server.imports.length, importsBefore);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("publish accepts flexible version names", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-publish-"));
+  try {
+    const apk = await writeFakeApk(directory, "flex.apk", ["arm64-v8a"], {
+      packageName: "dev.example.flex",
+      versionCode: 7,
+      versionName: "1.0.0+42",
+    });
+    const result = await run(
+      [
+        "publish",
+        apk,
+        "--app-id",
+        "flexapp",
+        "--create",
+        "--version",
+        "Bản nội bộ (beta)",
+        "--json",
+      ],
+      onlineEnv(directory),
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as {
+      versionName: string;
+      allowMismatch: string[];
+    };
+    assert.equal(payload.versionName, "Bản nội bộ (beta)");
+    assert.deepEqual(payload.allowMismatch, ["version"]);
+    assert.equal(
+      server.apps.get("flexapp")?.versions.has("Bản nội bộ (beta)"),
+      true,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("publish adds allow_mismatch=version when the user overrides the APK version", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "testflight-publish-"));
   try {

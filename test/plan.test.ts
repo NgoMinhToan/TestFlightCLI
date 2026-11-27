@@ -103,6 +103,67 @@ test("buildReleasePlan infers version name and code from the first APK", async (
   }
 });
 
+test("buildReleasePlan accepts flexible version names", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-plan-"));
+  try {
+    const apk = await writeFakeApk(directory, "app-arm64-v8a.apk", ["arm64-v8a"], MANIFEST);
+    for (const versionName of ["1.0.0+42", "Bản nội bộ (beta)", "release candidate [2]"]) {
+      const plan = await buildReleasePlan(
+        baseInput({ apkPaths: [apk], versionName, versionCodeRaw: "142" }),
+      );
+      assert.equal(plan.versionName, versionName);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("buildReleasePlan falls back to String(versionCode) when versionName is a reference", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-plan-"));
+  try {
+    const apk = await writeFakeApk(directory, "app-arm64-v8a.apk", ["arm64-v8a"], {
+      ...MANIFEST,
+      versionCode: 300,
+      versionNameReference: true,
+    });
+    const plan = await buildReleasePlan(
+      baseInput({ apkPaths: [apk], versionName: undefined, versionCodeRaw: undefined }),
+    );
+    assert.equal(plan.versionName, "300");
+    assert.equal(plan.versionNameInferred, true);
+    assert.deepEqual(plan.allowMismatch, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("buildReleasePlan rejects path-unsafe version names", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-plan-"));
+  try {
+    const apk = await writeFakeApk(directory, "app-arm64-v8a.apk", ["arm64-v8a"], MANIFEST);
+    for (const versionName of [
+      "../escape",
+      "a/b",
+      "a\\b",
+      "a\u0000b",
+      " padded",
+      "trailing ",
+      ".hidden",
+      ".",
+      "..",
+      "x".repeat(201),
+    ]) {
+      await assert.rejects(
+        () => buildReleasePlan(baseInput({ apkPaths: [apk], versionName })),
+        /Invalid version name/,
+        `expected "${versionName}" to be rejected`,
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("explicit identity values that differ from the APK add allow_mismatch", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "testflight-plan-"));
   try {

@@ -18,7 +18,12 @@ import {
   shortSha,
   success,
 } from "../output.js";
-import { confirmDestructive, createClient, requireId } from "./common.js";
+import {
+  confirmDestructive,
+  createClient,
+  requireId,
+  requireVersionName,
+} from "./common.js";
 
 async function deleteArtifact(rest: string[]): Promise<number> {
   const { values, positionals } = parseCommandArgs(
@@ -37,7 +42,7 @@ async function deleteArtifact(rest: string[]): Promise<number> {
     "app id",
     "testflight artifacts delete <appId> <versionName> <abi>",
   );
-  const versionName = requireId(
+  const versionName = requireVersionName(
     positionals[1],
     "version name",
     "testflight artifacts delete <appId> <versionName> <abi>",
@@ -80,7 +85,7 @@ async function listArtifacts(rest: string[]): Promise<number> {
     "app id",
     "testflight artifacts list <appId> <versionName>",
   );
-  const versionName = requireId(
+  const versionName = requireVersionName(
     positionals[1],
     "version name",
     "testflight artifacts list <appId> <versionName>",

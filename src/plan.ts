@@ -5,7 +5,11 @@ import { artifactAbiOf, type ApkMetadata, type MismatchKind } from "./apk-manife
 import { scanApk } from "./apk.js";
 import type { VersionAdmin } from "./api.js";
 import { CliError, UsageError } from "./errors.js";
-import { parsePositiveInteger } from "./validate.js";
+import {
+  isValidVersionName,
+  parsePositiveInteger,
+  VERSION_NAME_RULE,
+} from "./validate.js";
 
 export interface AppMetadataInput {
   name?: string;
@@ -338,13 +342,6 @@ export async function buildReleasePlan(input: ReleaseInput): Promise<ReleasePlan
   const detectedVersionName = firstMetadata?.versionName ?? null;
   const detectedVersionCode = firstMetadata?.versionCode ?? null;
 
-  const versionName = input.versionName ?? detectedVersionName ?? undefined;
-  if (versionName === undefined) {
-    throw new UsageError(
-      "Cannot infer --version from the APK.",
-      "This manifest uses a resource reference or is unreadable; pass --version <name> explicitly.",
-    );
-  }
   const versionCodeRaw =
     input.versionCodeRaw ?? (detectedVersionCode !== null ? String(detectedVersionCode) : undefined);
   if (versionCodeRaw === undefined) {
@@ -354,6 +351,18 @@ export async function buildReleasePlan(input: ReleaseInput): Promise<ReleasePlan
     );
   }
   const versionCode = parseInteger(versionCodeRaw, "--version-code");
+
+  // The artifact routes need a name. When the manifest uses a resource
+  // reference (or is unreadable), fall back to the numeric versionCode.
+  const versionName =
+    input.versionName ?? detectedVersionName ?? String(versionCode);
+  if (!isValidVersionName(versionName)) {
+    const source = input.versionName !== undefined ? "--version" : "the APK";
+    throw new UsageError(
+      `Invalid version name "${versionName}" from ${source}.`,
+      VERSION_NAME_RULE,
+    );
+  }
   const versionNameInferred = input.versionName === undefined;
   const versionCodeInferred = input.versionCodeRaw === undefined;
 

@@ -31,6 +31,7 @@ import {
   parsePublishedAt,
   parseVersionCode,
   requireId,
+  requireVersionName,
   resolveReleaseNotes,
 } from "./common.js";
 
@@ -143,7 +144,7 @@ async function listVersions(rest: string[]): Promise<number> {
   const { api, settings } = await createClient(globals, { requireKey: false });
 
   if (positionals.length === 2) {
-    const versionName = requireId(
+    const versionName = requireVersionName(
       positionals[1],
       "version name",
       "testflight versions get <appId> <versionName>",
@@ -212,7 +213,7 @@ async function getVersion(rest: string[]): Promise<number> {
     "app id",
     "testflight versions get <appId> <versionName>",
   );
-  const versionName = requireId(
+  const versionName = requireVersionName(
     positionals[1],
     "version name",
     "testflight versions get <appId> <versionName>",
@@ -238,7 +239,7 @@ async function listAbis(rest: string[]): Promise<number> {
     "app id",
     "testflight versions abis <appId> <versionName>",
   );
-  const versionName = requireId(
+  const versionName = requireVersionName(
     positionals[1],
     "version name",
     "testflight versions abis <appId> <versionName>",
@@ -307,7 +308,7 @@ async function createVersion(rest: string[]): Promise<number> {
     "app id",
     "testflight versions create <appId> <versionName> --version-code <n>",
   );
-  const versionName = requireId(
+  const versionName = requireVersionName(
     positionals[1],
     "version name",
     "testflight versions create <appId> <versionName> --version-code <n>",
@@ -364,7 +365,7 @@ async function updateVersion(rest: string[]): Promise<number> {
     "app id",
     "testflight versions update <appId> <versionName> [options]",
   );
-  const versionName = requireId(
+  const versionName = requireVersionName(
     positionals[1],
     "version name",
     "testflight versions update <appId> <versionName> [options]",
@@ -447,7 +448,7 @@ async function deleteVersion(rest: string[]): Promise<number> {
     "app id",
     "testflight versions delete <appId> <versionName> [--yes]",
   );
-  const versionName = requireId(
+  const versionName = requireVersionName(
     positionals[1],
     "version name",
     "testflight versions delete <appId> <versionName> [--yes]",

@@ -7,6 +7,7 @@ import {
   type DetectedApk,
   type MismatchKind,
 } from "../src/apk-manifest.js";
+import { isValidVersionName } from "../src/validate.js";
 
 interface FakeArtifact {
   abi: string;
@@ -278,6 +279,18 @@ export async function startFakeServer(): Promise<FakeServer> {
       return;
     }
 
+    // Test hook: reject before draining the request body, like a server that
+    // authenticates and validates the URL before reading a large APK.
+    if (
+      method === "PUT" &&
+      parts.length === 8 &&
+      parts[6] === "artifacts" &&
+      parts[7] === "__early_422__"
+    ) {
+      failure(response, 422, "apk_metadata_mismatch", "Rejected before reading the request body");
+      return;
+    }
+
     try {
       if (parts[0] !== "api" || parts[1] !== "v1") {
         failure(response, 404, "not_found", "Route not found");
@@ -318,6 +331,18 @@ export async function startFakeServer(): Promise<FakeServer> {
             failure(response, 404, "app_not_found", `Unknown app "${appId}"`);
             return;
           }
+          const clash = [...apps.values()].find(
+            (other) => other.packageName === detected.packageName,
+          );
+          if (clash) {
+            failure(
+              response,
+              409,
+              "package_in_use",
+              `Package "${detected.packageName}" is already used by app "${clash.id}"`,
+            );
+            return;
+          }
           const defaultName = humanize(appId.split(".").pop() ?? appId);
           app = {
             id: appId,
@@ -342,18 +367,19 @@ export async function startFakeServer(): Promise<FakeServer> {
           }
         }
 
-        const versionName =
-          url.searchParams.get("version") ?? detected.versionName;
-        if (!versionName) {
-          failure(response, 400, "invalid_request", "A version name is required");
-          return;
-        }
         const versionCodeRaw = url.searchParams.get("versionCode");
         const versionCode = versionCodeRaw
           ? Number(versionCodeRaw)
           : detected.versionCode;
         if (!Number.isSafeInteger(versionCode) || versionCode <= 0) {
           failure(response, 400, "invalid_request", "Invalid versionCode");
+          return;
+        }
+        // The server resolves the name: query → manifest → String(versionCode).
+        const versionName =
+          url.searchParams.get("version") ?? detected.versionName ?? String(versionCode);
+        if (!isValidVersionName(versionName)) {
+          failure(response, 400, "version_name_invalid", `Invalid version name "${versionName}"`);
           return;
         }
 
@@ -443,10 +469,22 @@ export async function startFakeServer(): Promise<FakeServer> {
             failure(response, 409, "app_exists", `App "${id}" already exists`);
             return;
           }
+          const packageName =
+            typeof body.packageName === "string" ? body.packageName : id;
+          const clash = [...apps.values()].find((other) => other.packageName === packageName);
+          if (clash) {
+            failure(
+              response,
+              409,
+              "package_in_use",
+              `Package "${packageName}" is already used by app "${clash.id}"`,
+            );
+            return;
+          }
           const app: FakeApp = {
             id,
             name: typeof body.name === "string" ? body.name : humanize(id),
-            packageName: typeof body.packageName === "string" ? body.packageName : id,
+            packageName,
             description: typeof body.description === "string" ? body.description : "",
             developer: typeof body.developer === "string" ? body.developer : "",
             icon: null,
@@ -501,7 +539,33 @@ export async function startFakeServer(): Promise<FakeServer> {
             unknown
           >;
           if (typeof body.name === "string") app.name = body.name;
-          if (typeof body.packageName === "string") app.packageName = body.packageName;
+          if (typeof body.packageName === "string" && body.packageName !== app.packageName) {
+            const hasArtifacts = [...app.versions.values()].some(
+              (version) => version.artifacts.size > 0,
+            );
+            if (hasArtifacts) {
+              failure(
+                response,
+                409,
+                "package_locked",
+                `App "${appId}" already has uploaded APKs; its package cannot change`,
+              );
+              return;
+            }
+            const clash = [...apps.values()].find(
+              (other) => other.id !== appId && other.packageName === body.packageName,
+            );
+            if (clash) {
+              failure(
+                response,
+                409,
+                "package_in_use",
+                `Package "${String(body.packageName)}" is already used by app "${clash.id}"`,
+              );
+              return;
+            }
+            app.packageName = body.packageName as string;
+          }
           if (typeof body.description === "string") app.description = body.description;
           if (typeof body.developer === "string") app.developer = body.developer;
           json(response, 200, { app: appDetail(app) });
@@ -535,7 +599,16 @@ export async function startFakeServer(): Promise<FakeServer> {
             ) as Record<string, unknown>;
             const versionName = typeof body.versionName === "string" ? body.versionName : "";
             const versionCode = typeof body.versionCode === "number" ? body.versionCode : 0;
-            if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(versionName) || versionCode <= 0) {
+            if (!isValidVersionName(versionName)) {
+              failure(
+                response,
+                400,
+                "version_name_invalid",
+                `Invalid version name "${versionName}"`,
+              );
+              return;
+            }
+            if (versionCode <= 0) {
               failure(response, 400, "invalid_request", "Invalid version");
               return;
             }
@@ -614,7 +687,9 @@ export async function startFakeServer(): Promise<FakeServer> {
             : `${appId}-${versionName}-${artifact.abi}.apk`;
           response.writeHead(200, {
             "content-type": "application/vnd.android.package-archive",
-            "content-disposition": `attachment; filename="${filename}"`,
+            // Version names may contain spaces/Unicode; HTTP headers must be
+            // ASCII, so the test server percent-encodes the filename.
+            "content-disposition": `attachment; filename="${encodeURIComponent(filename)}"`,
             "content-length": String(artifact.bytes.length),
             "cache-control": "no-store",
             "x-checksum-sha256": artifact.sha256,

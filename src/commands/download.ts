@@ -21,7 +21,7 @@ import {
   shortSha,
   success,
 } from "../output.js";
-import { createClient, requireId } from "./common.js";
+import { createClient, requireId, requireVersionName } from "./common.js";
 
 export async function runDownload(argv: string[]): Promise<number> {
   const { values, positionals } = parseCommandArgs(
@@ -45,7 +45,7 @@ export async function runDownload(argv: string[]): Promise<number> {
     "app id",
     "testflight download <appId> <versionName> [options]",
   );
-  const versionName = requireId(
+  const versionName = requireVersionName(
     positionals[1],
     "version name",
     "testflight download <appId> <versionName> [options]",
