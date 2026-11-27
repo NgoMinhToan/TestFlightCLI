@@ -28,8 +28,8 @@ export class ApiError extends CliError {
   readonly status: number;
   readonly code: string;
 
-  constructor(status: number, code: string, message: string) {
-    super(message);
+  constructor(status: number, code: string, message: string, hint?: string) {
+    super(message, hint);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
@@ -62,6 +62,10 @@ export function apiErrorHint(error: ApiError): string | undefined {
       return "The upload is larger than the server's MAX_APK_BYTES (or 2 MiB for icons).";
     case "unsupported_media_type":
       return "The server accepts APKs and PNG/JPEG/WebP icons only.";
+    case "invalid_apk":
+      return "The file is not a readable APK, its AndroidManifest.xml is missing or corrupt, or it uses ZIP64.";
+    case "apk_metadata_mismatch":
+      return "The APK does not match the app/version it is uploaded to. Fix the build, or pass --allow-mismatch with the fields above.";
     case "invalid_request":
       return "Run the command with --help to check the arguments.";
     default:

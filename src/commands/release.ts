@@ -36,6 +36,8 @@ import {
 import {
   absoluteDownloadUrl,
   createClient,
+  mergeAllowMismatch,
+  parseAllowMismatch,
   parseOptionalMinSdk,
   parsePublishedAt,
   requireId,
@@ -43,18 +45,19 @@ import {
   type CommandClient,
 } from "./common.js";
 
-function describeSource(artifact: PlannedArtifact): string {
+export function describeSource(artifact: PlannedArtifact): string {
   switch (artifact.source) {
     case "flag":
       return "--abi";
     case "contents":
+      if (artifact.detectedAbis.length === 0) return "manifest (no native libs)";
       return artifact.detectedAbis.length > 1
         ? `universal (has ${artifact.detectedAbis.join(", ")})`
-        : "lib/ in APK";
+        : "manifest (lib/ in APK)";
     case "filename":
-      return "filename";
+      return "filename (manifest unreadable)";
     case "default":
-      return "default (no native libs)";
+      return "default (manifest unreadable)";
   }
 }
 
@@ -63,6 +66,7 @@ function printPlan(
   client: CommandClient & { app: AppDetail | null; version: VersionAdmin | null },
   differences: string[],
   conflicts: string[],
+  allowMismatch: string[],
 ): void {
   heading(`Plan: ${plan.appId} ${plan.versionName} (${plan.versionCode})`);
   line();
@@ -79,6 +83,9 @@ function printPlan(
   }
   if (conflicts.length > 0) {
     line(`  Existing: artifacts ${conflicts.join(", ")} would be replaced`);
+  }
+  if (allowMismatch.length > 0) {
+    line(`  Allow:    ${allowMismatch.join(", ")}`);
   }
   line();
 
@@ -106,6 +113,7 @@ export async function runRelease(argv: string[]): Promise<number> {
       "release-notes": { type: "string" },
       "notes-file": { type: "string" },
       "published-at": { type: "string" },
+      "allow-mismatch": { type: "string" },
       create: { type: "boolean" },
       name: { type: "string" },
       package: { type: "string" },
@@ -128,28 +136,19 @@ export async function runRelease(argv: string[]): Promise<number> {
   const appId = requireId(
     positionals[0],
     "app id",
-    "testflight release <appId> <apk...> --version <name> --version-code <n>",
+    "testflight release <appId> <apk...> [--version <name>] [--version-code <n>]",
   );
   const apkPaths = positionals.slice(1);
   if (apkPaths.length === 0) {
     throw new UsageError(
       "At least one APK is required.",
-      "Usage: testflight release <appId> <apk...> --version <name> --version-code <n>",
+      "Usage: testflight release <appId> <apk...> [--version <name>] [--version-code <n>]",
     );
   }
 
-  const versionName = requireId(
-    stringValue(values, "version"),
-    "version name",
-    "testflight release <appId> <apk...> --version <name> --version-code <n>",
-  );
+  const versionNameRaw = stringValue(values, "version");
+  if (versionNameRaw !== undefined) requireId(versionNameRaw, "version name", "testflight release");
   const versionCodeRaw = stringValue(values, "version-code");
-  if (versionCodeRaw === undefined) {
-    throw new UsageError(
-      "Missing --version-code.",
-      "Every version needs a positive integer versionCode.",
-    );
-  }
 
   let abiFlags = expandCsv(listValue(values, "abi"));
   const universal = booleanValue(values, "universal");
@@ -175,9 +174,10 @@ export async function runRelease(argv: string[]): Promise<number> {
   if (minSdkRaw !== undefined) parseOptionalMinSdk(minSdkRaw);
 
   const dryRun = booleanValue(values, "dry-run");
+  const requestedMismatch = parseAllowMismatch(stringValue(values, "allow-mismatch"));
   const plan = await buildReleasePlan({
     appId,
-    versionName,
+    versionName: versionNameRaw,
     versionCodeRaw,
     minSdkRaw,
     releaseNotes,
@@ -195,6 +195,10 @@ export async function runRelease(argv: string[]): Promise<number> {
     },
   });
 
+  for (const warning of plan.warnings) warn(warning);
+
+  const allowMismatch = mergeAllowMismatch(plan.allowMismatch, requestedMismatch);
+  const versionName = plan.versionName;
   const { api, settings } = await createClient(globals, { requireKey: !dryRun });
 
   const existingApp = await api.findApp(appId);
@@ -223,6 +227,10 @@ export async function runRelease(argv: string[]): Promise<number> {
         appId,
         versionName,
         versionCode: plan.versionCode,
+        versionNameInferred: plan.versionNameInferred,
+        versionCodeInferred: plan.versionCodeInferred,
+        detected: plan.detected,
+        allowMismatch,
         appExists: existingApp !== null,
         versionExists: existingVersion !== null,
         wouldCreateApp: existingApp === null && plan.createApp,
@@ -233,13 +241,15 @@ export async function runRelease(argv: string[]): Promise<number> {
           fileName: artifact.fileName,
           sizeBytes: artifact.sizeBytes,
           abi: artifact.abi,
+          artifactAbi: artifact.artifactAbi,
           detectedBy: artifact.source,
+          metadata: artifact.metadata,
         })),
         needsForce: differences.length > 0 || conflicts.length > 0,
       });
       return 0;
     }
-    printPlan(plan, clientInfo, differences, conflicts);
+    printPlan(plan, clientInfo, differences, conflicts, allowMismatch);
     if (!existingApp && !plan.createApp) {
       warn("The app does not exist; add --create to create it during the release.");
     }
@@ -330,6 +340,7 @@ export async function runRelease(argv: string[]): Promise<number> {
               enabled: showProgress,
             });
           },
+          allowMismatch,
         },
       );
       progress(artifact.abi, artifact.sizeBytes, artifact.sizeBytes, {
@@ -373,6 +384,10 @@ export async function runRelease(argv: string[]): Promise<number> {
       createdVersion,
       updatedVersion,
       forced: force,
+      versionNameInferred: plan.versionNameInferred,
+      versionCodeInferred: plan.versionCodeInferred,
+      detected: plan.detected,
+      allowMismatch,
       uploads: uploads.map((upload) => ({
         abi: upload.abi,
         file: upload.filePath,
@@ -380,6 +395,7 @@ export async function runRelease(argv: string[]): Promise<number> {
         sha256: upload.sha256,
         serverSha256: upload.serverSha256,
         created: upload.created,
+        detected: upload.detected,
       })),
       downloadUrl,
     });

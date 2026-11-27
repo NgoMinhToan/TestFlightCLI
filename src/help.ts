@@ -240,23 +240,26 @@ const HELP: Record<string, HelpEntry> = {
   release: {
     summary: "Create a version and upload one APK per ABI (alias: push).",
     usage: [
-      "testflight release <appId> <apk...> --version <name> --version-code <n> [options]",
+      "testflight release <appId> <apk...> [--version <name>] [--version-code <n>] [options]",
     ],
     details: [
-      "Each APK's ABI is detected from its native libraries (lib/<abi>/), then",
-      "from its filename; pass --abi to override. An APK with several ABIs is",
-      "published as universal. Existing drafts gain artifacts; a published",
-      "version is only replaced with --force (or an interactive confirmation).",
+      "The version name/code come from --version/--version-code, or from the",
+      "first APK's binary AndroidManifest.xml when omitted. All APKs must",
+      "describe the same package and version. Each APK's ABI comes from its",
+      "manifest and lib/<abi>/ entries (zero or several ⇒ universal); pass",
+      "--abi to override. Existing drafts gain artifacts; a published version",
+      "is only replaced with --force (or an interactive confirmation).",
     ],
     options: [
-      ["--version <name>", "Required version name (e.g. 1.4.2)"],
-      ["--version-code <n>", "Required positive versionCode"],
+      ["--version <name>", "Version name (default: the APK's versionName)"],
+      ["--version-code <n>", "Positive versionCode (default: the APK's versionCode)"],
       ["--abi <abi>", "Repeatable; one value per APK. Valid: universal, arm64-v8a, armeabi-v7a, x86_64, x86, riscv64, armeabi"],
       ["--universal", "Publish a single APK as universal"],
       ["--min-sdk <n>", "Minimum Android API level"],
       ["--release-notes <text>", "Release notes"],
       ["--notes-file <path>", "Read release notes from a UTF-8 file"],
       ["--published-at <iso>", "Publication timestamp (default: server time)"],
+      ["--allow-mismatch <csv>", "Skip strict checks: package, version, sdk, abi"],
       ["--create", "Create the app if it does not exist"],
       ["--name <text>", "App name to use with --create"],
       ["--package <name>", "Package name to use with --create"],
@@ -269,9 +272,68 @@ const HELP: Record<string, HelpEntry> = {
     ],
     examples: [
       "testflight release crm app-arm64-v8a.apk --version 1.4.2 --version-code 142",
+      "testflight release crm app-arm64-v8a.apk --version-code 142",
       "testflight release crm app-arm64.apk app-x86_64.apk --version 1.4.2 --version-code 142 --abi arm64-v8a --abi x86_64",
-      "testflight push crm app-release.apk --version 1.4.2 --version-code 142 --create",
-      "testflight release crm app.apk --version 1.4.2 --version-code 142 --dry-run",
+      "testflight push crm app-release.apk --create",
+      "testflight release crm app.apk --dry-run",
+    ],
+  },
+  apk: {
+    summary: "Inspect APK files without contacting a server.",
+    usage: ["testflight apk inspect <apk...> [--json]"],
+    details: [
+      "Reads the ZIP central directory and the binary AndroidManifest.xml;",
+      "prints packageName, versionCode/versionName, minSdk/targetSdk, ABIs,",
+      "debuggable/testOnly and split flags. Exits 1 when a file cannot be read.",
+    ],
+    examples: [
+      "testflight apk inspect app-release.apk",
+      "testflight apk inspect app-arm64-v8a.apk --json",
+    ],
+  },
+  "apk inspect": {
+    summary: "Print the metadata of one or more APKs.",
+    usage: ["testflight apk inspect <apk...> [--json]"],
+    details: [
+      "Everything is computed locally; no server or management key is needed.",
+      "In JSON mode a failed file becomes { \"path\": ..., \"error\": ... } and",
+      "the command exits 1 after printing every result.",
+    ],
+    options: [],
+    examples: [
+      "testflight apk inspect app-arm64-v8a.apk",
+      "testflight apk inspect build/*.apk --json",
+    ],
+  },
+  publish: {
+    summary: "Publish APKs in one step using the server's APK-only import route.",
+    usage: ["testflight publish <apk...> [options]"],
+    details: [
+      "Inspects every APK first, requires one package/version per batch and",
+      "stops before creating anything if they disagree. App id defaults to the",
+      "APK's package name; version name/code default to the APK's manifest.",
+      "The server infers the ABI. POST /api/v1/import must exist (upgrade old",
+      "servers); `release` keeps using the older artifact routes.",
+      "Release notes above 4 KiB are sent with a follow-up PUT instead of the",
+      "import query string. --dry-run is fully offline.",
+    ],
+    options: [
+      ["--app-id <id>", "App id (default: the APK's package name)"],
+      ["--create", "Create the app if it does not exist"],
+      ["--name <text>", "App display name to use with --create"],
+      ["--version <name>", "Version name (default: the APK's versionName)"],
+      ["--version-code <n>", "Positive versionCode (default: the APK's versionCode)"],
+      ["--release-notes <text>", "Release notes"],
+      ["--notes-file <path>", "Read release notes from a UTF-8 file"],
+      ["--published-at <iso>", "Publication timestamp (default: server time)"],
+      ["--allow-mismatch <csv>", "Skip strict checks: package, version, sdk, abi"],
+      ["-n, --dry-run", "Inspect and print the plan without a server"],
+      ["--no-progress", "Hide the upload progress bar"],
+    ],
+    examples: [
+      "testflight publish app-arm64-v8a.apk --create",
+      "testflight publish build/app-arm64-v8a.apk build/app-x86_64.apk --app-id crm --json",
+      "testflight publish app-release.apk --version 1.4.2 --version-code 142 --dry-run",
     ],
   },
   download: {
@@ -375,6 +437,8 @@ export function printRootHelp(): void {
   line("  versions delete <appId> <v> Delete a version");
   line();
   heading("Publish:");
+  line("  apk inspect <apk...>        Print package/version/SDK/ABI metadata");
+  line("  publish <apk...>            Inspect and import APKs (POST /api/v1/import)");
   line("  release <appId> <apk...>    Create/update a version and upload APKs");
   line("                              (alias: push)");
   line("  download <appId> <v>        Download an APK");
@@ -386,7 +450,8 @@ export function printRootHelp(): void {
   heading("Examples:");
   line("  testflight login http://127.0.0.1:8080");
   line('  testflight apps create crm --name "Internal CRM" --package com.company.crm');
-  line("  testflight push crm app-arm64-v8a.apk --version 1.4.2 --version-code 142");
+  line("  testflight apk inspect app-arm64-v8a.apk --json");
+  line("  testflight publish app-arm64-v8a.apk --create");
   line("  testflight versions abis crm 1.4.2 --json");
   line();
   info("Run `testflight <command> --help` for details. Alias: tf.");

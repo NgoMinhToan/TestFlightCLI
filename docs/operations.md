@@ -9,7 +9,7 @@
 | Code | Nghĩa |
 |---|---|
 | `0` | Thành công |
-| `1` | Lỗi server, mạng hoặc kiểm tra (`doctor`) |
+| `1` | Lỗi server, mạng, file APK không đọc được, hoặc kiểm tra (`doctor`, `apk inspect`) |
 | `2` | Sai cú pháp, flag hoặc tham số |
 | `130` | Bị huỷ (`Ctrl+C`) |
 
@@ -78,11 +78,17 @@ node dist/cli.js --help
 ```
 
 - **Unit test** (`test/*.test.ts`): `node --test` + `tsx`, không cần server thật.
-- **Fake server** (`test/fake-server.ts`): mô phỏng API, auth, upload, download và checksum.
-- **CLI end-to-end** (`test/cli.test.ts`): spawn `src/cli.ts`, chạy trọn luồng
-  login → create → release → versions → download → force.
-- **Fixture APK** (`test/zip-fixture.ts`): tạo ZIP hợp lệ tối thiểu với `lib/<abi>/` để kiểm tra
-  bộ đọc central directory.
+- **Fake server** (`test/fake-server.ts`): mô phỏng API, auth, upload, `POST /api/v1/import`, suy
+  ABI, verify metadata, `allow_mismatch`, download và checksum.
+- **CLI end-to-end** (`test/cli.test.ts`, `test/publish.test.ts`): spawn `src/cli.ts`, chạy trọn
+  luồng login → create → release → publish → inspect → download → force.
+- **Fixture APK** (`test/zip-fixture.ts`): tạo ZIP stored/deflate và AXML UTF-8/UTF-16 hợp lệ, kèm
+  `writeFakeApk(dir, file, abis, metadata?)`.
+- **Fixture thật** (`test/fixtures/manifest.axml.b64`): manifest 8 000 byte lấy từ APK trong
+  workspace, dùng chung hợp đồng với server và dashboard. Không commit APK thật.
+- `test/apk-manifest.test.ts` kiểm tra parser: fixture thật, stored/deflate, UTF-8/UTF-16,
+  reference `versionName`, codename SDK (→ null), config split, ZIP64, manifest hỏng và giới hạn
+  16 MiB/8 MiB.
 
 ```text
 TestFlightCLI/
@@ -107,6 +113,10 @@ TestFlightCLI/
 | `HTTP 503 management_key_not_configured` | Server chưa có `data/config.json`; khởi động server một lần. |
 | `HTTP 409 version_exists` | Version đã tồn tại; dùng `--version` mới hoặc `--force`. |
 | `HTTP 413 payload_too_large` | APK vượt `MAX_APK_BYTES` của server (mặc định 512 MiB) hoặc icon > 2 MiB. |
+| `HTTP 400 invalid_apk` | File không phải ZIP/APK, thiếu hoặc hỏng `AndroidManifest.xml`, dùng ZIP64, hoặc là config split. Kiểm tra bằng `testflight apk inspect <file>`. |
+| `HTTP 422 apk_metadata_mismatch` | Package/version/minSdk/ABI trong APK lệch app/version đích. Sửa build, hoặc thêm `--allow-mismatch package,version,sdk,abi` khi thật sự chủ ý. |
+| `HTTP 404 not_found` từ `publish` | Server chưa có `POST /api/v1/import`; nâng cấp MyTestflightServer hoặc dùng `release` với các route artifact cũ. |
+| `Cannot read AndroidManifest.xml …` | Manifest hỏng hoặc ZIP64; CLI vẫn suy ABI từ tên file nhưng server sẽ từ chối. Dùng `apk inspect` để xem chi tiết. |
 | `Cannot reach …` | Sai base URL, server chưa chạy hoặc firewall. Thử `testflight doctor`. |
 | `No MyTestflight server is configured` | Chưa `login` và chưa có biến môi trường; xem [Cấu hình](./configuration.md). |
 | `Both "a.apk" and "b.apk" resolve to ABI …` | Hai APK cùng ABI; truyền `--abi` rõ ràng hoặc bỏ một file. |

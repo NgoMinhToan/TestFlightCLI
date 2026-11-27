@@ -6,6 +6,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type { Abi } from "./abi.js";
+import type { DetectedApk, MismatchKind } from "./apk-manifest.js";
 import { ApiError, CliError } from "./errors.js";
 import { joinUrl } from "./url.js";
 
@@ -100,6 +101,48 @@ export interface UploadResult {
   verified: boolean;
   created: boolean;
   version: VersionAdmin;
+  /** Metadata the server parsed from the uploaded APK, when it supports it. */
+  detected: DetectedApk | null;
+}
+
+export interface UploadHooks {
+  onProgress?: (uploaded: number, total: number) => void;
+  /** Categories the server may verify strictly but the caller overrode. */
+  allowMismatch?: MismatchKind[];
+}
+
+export interface ImportApkParams {
+  appId?: string;
+  create?: boolean;
+  versionName?: string;
+  versionCode?: number;
+  name?: string;
+  releaseNotes?: string;
+  publishedAt?: string;
+  allowMismatch?: MismatchKind[];
+}
+
+export interface ImportArtifact {
+  abi: Abi;
+  sizeBytes: number;
+  sha256: string | null;
+  downloadPath: string | null;
+}
+
+export interface ImportResult {
+  app: AppDetail;
+  version: VersionAdmin;
+  detected: DetectedApk | null;
+  artifact: ImportArtifact | null;
+  createdApp: boolean;
+  createdVersion: boolean;
+  createdArtifact: boolean;
+  status: number;
+  filePath: string;
+  sizeBytes: number;
+  sha256: string;
+  serverSha256: string | null;
+  verified: boolean;
 }
 
 export interface DownloadResult {
@@ -134,6 +177,16 @@ function segment(value: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function allowMismatchQuery(kinds: readonly MismatchKind[] | undefined): string {
+  const unique = [...new Set(kinds ?? [])];
+  return unique.length > 0 ? `allow_mismatch=${segment(unique.join(","))}` : "";
+}
+
+function withQuery(apiPath: string, query: string): string {
+  if (!query) return apiPath;
+  return `${apiPath}${apiPath.includes("?") ? "&" : "?"}${query}`;
 }
 
 export class TestflightApi {
@@ -447,13 +500,17 @@ export class TestflightApi {
     );
   }
 
-  async uploadArtifact(
-    appId: string,
-    versionName: string,
-    abi: Abi,
+  /**
+   * Streams a file to a write endpoint without buffering it, hashing as it
+   * goes. Returns only once the readable side has been fully consumed so the
+   * SHA-256 is complete.
+   */
+  private async streamUpload(
+    method: "PUT" | "POST",
+    apiPath: string,
     filePath: string,
-    hooks: { onProgress?: (uploaded: number, total: number) => void } = {},
-  ): Promise<UploadResult> {
+    hooks: UploadHooks,
+  ): Promise<{ sha256: string; sizeBytes: number; response: Response }> {
     const info = await stat(filePath).catch(() => null);
     if (!info?.isFile()) throw new CliError(`APK not found: ${filePath}`);
     if (info.size === 0) throw new CliError(`APK is empty: ${filePath}`);
@@ -486,7 +543,7 @@ export class TestflightApi {
     let response: Response;
     try {
       const init = {
-        method: "PUT",
+        method,
         headers: {
           ...this.authHeaders(),
           "content-type": "application/vnd.android.package-archive",
@@ -496,12 +553,7 @@ export class TestflightApi {
         body: Readable.toWeb(meter) as unknown as RequestInit["body"],
         duplex: "half",
       } as RequestInit & { duplex: "half" };
-      response = await this.fetchImpl(
-        this.url(
-          `/api/v1/apps/${segment(appId)}/versions/${segment(versionName)}/artifacts/${segment(abi)}`,
-        ),
-        init,
-      );
+      response = await this.fetchImpl(this.url(apiPath), init);
     } catch (error) {
       source.destroy();
       meter.destroy();
@@ -515,30 +567,200 @@ export class TestflightApi {
     }
 
     await finished;
-    const sha256 = hash.digest("hex");
+    return { sha256: hash.digest("hex"), sizeBytes: info.size, response };
+  }
 
-    let payload: { version?: VersionAdmin };
+  private async parseUploadResponse(
+    response: Response,
+    message: string,
+  ): Promise<{ version: VersionAdmin; detected: DetectedApk | null }> {
+    let payload: { version?: VersionAdmin; detected?: DetectedApk | null };
     try {
-      payload = (await response.json()) as { version?: VersionAdmin };
+      payload = (await response.json()) as { version?: VersionAdmin; detected?: DetectedApk | null };
     } catch {
       throw new CliError("The server accepted the APK but returned an invalid response.");
     }
-    if (!payload.version) {
-      throw new CliError("The server accepted the APK but returned no version details.");
-    }
+    if (!payload.version) throw new CliError(message);
+    return { version: payload.version, detected: payload.detected ?? null };
+  }
 
-    const artifact = payload.version.artifacts.find((entry) => entry.abi === abi) ?? null;
+  async uploadArtifact(
+    appId: string,
+    versionName: string,
+    abi: Abi,
+    filePath: string,
+    hooks: UploadHooks = {},
+  ): Promise<UploadResult> {
+    const apiPath = withQuery(
+      `/api/v1/apps/${segment(appId)}/versions/${segment(versionName)}/artifacts/${segment(abi)}`,
+      allowMismatchQuery(hooks.allowMismatch),
+    );
+    const { sha256, sizeBytes, response } = await this.streamUpload(
+      "PUT",
+      apiPath,
+      filePath,
+      hooks,
+    );
+    const { version, detected } = await this.parseUploadResponse(
+      response,
+      "The server accepted the APK but returned no version details.",
+    );
+
+    const artifact = version.artifacts.find((entry) => entry.abi === abi) ?? null;
     const serverSha256 = artifact?.sha256 ?? null;
 
     return {
       abi,
       filePath,
-      sizeBytes: info.size,
+      sizeBytes,
       sha256,
       serverSha256,
       verified: serverSha256 === null ? true : serverSha256.toLowerCase() === sha256,
       created: response.status === 201,
+      version,
+      detected,
+    };
+  }
+
+  /** Lets the server choose the artifact ABI from the APK manifest. */
+  async uploadArtifactAutoAbi(
+    appId: string,
+    versionName: string,
+    filePath: string,
+    hooks: UploadHooks = {},
+  ): Promise<UploadResult> {
+    const apiPath = withQuery(
+      `/api/v1/apps/${segment(appId)}/versions/${segment(versionName)}/artifacts`,
+      allowMismatchQuery(hooks.allowMismatch),
+    );
+    const { sha256, sizeBytes, response } = await this.streamUpload(
+      "PUT",
+      apiPath,
+      filePath,
+      hooks,
+    );
+    const { version, detected } = await this.parseUploadResponse(
+      response,
+      "The server accepted the APK but returned no version details.",
+    );
+    if (!detected) {
+      throw new CliError(
+        "The server did not report the ABI it detected.",
+        "Upgrade MyTestflightServer, or use `release` with an explicit --abi.",
+      );
+    }
+
+    const abi = detected.artifactAbi;
+    const artifact = version.artifacts.find((entry) => entry.abi === abi) ?? null;
+    const serverSha256 = artifact?.sha256 ?? null;
+
+    return {
+      abi,
+      filePath,
+      sizeBytes,
+      sha256,
+      serverSha256,
+      verified: serverSha256 === null ? true : serverSha256.toLowerCase() === sha256,
+      created: response.status === 201,
+      version,
+      detected,
+    };
+  }
+
+  /** Uploads an APK-only body to `POST /api/v1/import`. */
+  async importApk(
+    filePath: string,
+    params: ImportApkParams = {},
+    hooks: UploadHooks = {},
+  ): Promise<ImportResult> {
+    const query = new URLSearchParams();
+    if (params.appId !== undefined) query.set("appId", params.appId);
+    if (params.create !== undefined) query.set("create", params.create ? "true" : "false");
+    if (params.versionName !== undefined) query.set("version", params.versionName);
+    if (params.versionCode !== undefined) {
+      query.set("versionCode", String(params.versionCode));
+    }
+    if (params.name !== undefined) query.set("name", params.name);
+    if (params.releaseNotes !== undefined) query.set("releaseNotes", params.releaseNotes);
+    if (params.publishedAt !== undefined) query.set("publishedAt", params.publishedAt);
+    const allow = allowMismatchQuery(params.allowMismatch);
+    if (allow) query.set("allow_mismatch", [...new Set(params.allowMismatch ?? [])].join(","));
+
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    let uploaded;
+    try {
+      uploaded = await this.streamUpload("POST", `/api/v1/import${suffix}`, filePath, hooks);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        throw new ApiError(
+          error.status,
+          error.code,
+          error.message,
+          "This server does not expose POST /api/v1/import (or the route is disabled). Upgrade MyTestflightServer, or use `release` against the older artifact routes.",
+        );
+      }
+      throw error;
+    }
+    const { sha256, sizeBytes, response } = uploaded;
+
+    let payload: {
+      app?: AppDetail;
+      version?: VersionAdmin;
+      detected?: DetectedApk | null;
+      artifact?: {
+        abi?: unknown;
+        sizeBytes?: unknown;
+        sha256?: unknown;
+        downloadPath?: unknown;
+      } | null;
+      createdApp?: unknown;
+      createdVersion?: unknown;
+    };
+    try {
+      payload = (await response.json()) as typeof payload;
+    } catch {
+      throw new CliError("The server accepted the APK but returned an invalid response.");
+    }
+    if (!payload.app || !payload.version) {
+      throw new CliError("The server accepted the APK but returned no app/version details.");
+    }
+
+    const detected = payload.detected ?? null;
+    const rawArtifact = payload.artifact ?? null;
+    const artifact: ImportArtifact | null = rawArtifact
+      ? {
+          abi:
+            typeof rawArtifact.abi === "string"
+              ? (rawArtifact.abi as Abi)
+              : (detected?.artifactAbi ?? "universal"),
+          sizeBytes:
+            typeof rawArtifact.sizeBytes === "number" ? rawArtifact.sizeBytes : sizeBytes,
+          sha256: typeof rawArtifact.sha256 === "string" ? rawArtifact.sha256 : null,
+          downloadPath:
+            typeof rawArtifact.downloadPath === "string" ? rawArtifact.downloadPath : null,
+        }
+      : null;
+
+    const abi = artifact?.abi ?? detected?.artifactAbi ?? null;
+    const fromVersion = abi
+      ? (payload.version.artifacts.find((entry) => entry.abi === abi) ?? null)
+      : null;
+    const serverSha256 = artifact?.sha256 ?? fromVersion?.sha256 ?? null;
+
+    return {
+      app: payload.app,
       version: payload.version,
+      detected,
+      artifact,
+      createdApp: payload.createdApp === true,
+      createdVersion: payload.createdVersion === true,
+      createdArtifact: response.status === 201,
+      status: response.status,
+      filePath,
+      sizeBytes,
+      sha256,
+      serverSha256,
+      verified: serverSha256 === null ? true : serverSha256.toLowerCase() === sha256,
     };
   }
 

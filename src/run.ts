@@ -1,6 +1,8 @@
+import { runApkCommand } from "./commands/apk.js";
 import { runApps } from "./commands/apps.js";
 import { runArtifacts } from "./commands/artifacts.js";
 import { runDownload } from "./commands/download.js";
+import { runPublish } from "./commands/publish.js";
 import { runRelease } from "./commands/release.js";
 import { runConfig, runDoctor, runLogin, runLogout, runWhoami } from "./commands/setup.js";
 import { runVersions } from "./commands/versions.js";
@@ -50,6 +52,10 @@ async function dispatch(argv: string[]): Promise<number> {
     case "release":
     case "push":
       return runRelease(rest);
+    case "publish":
+      return runPublish(rest);
+    case "apk":
+      return runApkCommand(rest);
     case "download":
       return runDownload(rest);
     case "artifacts":
