@@ -76,7 +76,13 @@ test("a full login → create → release → inspect → download flow", async 
   } satisfies NodeJS.ProcessEnv;
 
   try {
-    const apk = await writeFakeApk(directory, "crm-arm64-v8a.apk", ["arm64-v8a"]);
+    const apk = await writeFakeApk(directory, "crm-arm64-v8a.apk", ["arm64-v8a"], {
+      packageName: "com.company.crm",
+      versionCode: 142,
+      versionName: "1.4.2",
+      minSdk: 26,
+      targetSdk: 37,
+    });
 
     const login = await run(
       ["login", "--url", server.url, "--key", server.key, "--json"],
@@ -192,6 +198,8 @@ test("a full login → create → release → inspect → download flow", async 
     assert.equal(forcedJson.updatedVersion, true);
     assert.equal(forcedJson.forced, true);
     assert.equal(forcedJson.version.versionCode, 143);
+    // The APK itself declares 142, so the override must carry allow_mismatch.
+    assert.equal(server.uploads.at(-1)?.allowMismatch, "version");
 
     const dryRun = await run(
       ["release", "crm", apk, "--version", "2.0.0", "--version-code", "200", "--dry-run", "--json"],
@@ -206,6 +214,123 @@ test("a full login → create → release → inspect → download flow", async 
     assert.equal(dryRunJson.dryRun, true);
     assert.equal(dryRunJson.versionExists, false);
     assert.deepEqual(dryRunJson.artifacts.map((artifact) => artifact.abi), ["arm64-v8a"]);
+
+    // Without --version/--version-code the identity comes from the APK.
+    const inferred = await run(["release", "crm", apk, "--dry-run", "--json"], env);
+    assert.equal(inferred.code, 0, inferred.stderr);
+    const inferredJson = JSON.parse(inferred.stdout) as {
+      versionName: string;
+      versionCode: number;
+      versionNameInferred: boolean;
+      versionCodeInferred: boolean;
+      detected: { versionName: string; versionCode: number };
+      allowMismatch: string[];
+    };
+    assert.equal(inferredJson.versionName, "1.4.2");
+    assert.equal(inferredJson.versionCode, 142);
+    assert.equal(inferredJson.versionNameInferred, true);
+    assert.equal(inferredJson.versionCodeInferred, true);
+    assert.deepEqual(inferredJson.detected, { versionName: "1.4.2", versionCode: 142 });
+    assert.deepEqual(inferredJson.allowMismatch, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("apk inspect prints metadata offline and reports unreadable files", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-cli-"));
+  const env = { TESTFLIGHT_CONFIG: path.join(directory, "config.json") };
+  try {
+    const apk = await writeFakeApk(directory, "inspect-arm64-v8a.apk", ["arm64-v8a"], {
+      packageName: "dev.example.inspect",
+      versionCode: 18,
+      versionName: "0.2.0",
+      minSdk: 26,
+      targetSdk: 37,
+    });
+    const result = await run(["apk", "inspect", apk, "--json"], env);
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as {
+      files: Array<{
+        path: string;
+        fileName: string;
+        sizeBytes: number;
+        artifactAbi: string;
+        metadata: { packageName: string; versionCode: number; versionName: string };
+        error?: string;
+      }>;
+    };
+    assert.equal(payload.files[0]?.metadata.packageName, "dev.example.inspect");
+    assert.equal(payload.files[0]?.metadata.versionCode, 18);
+    assert.equal(payload.files[0]?.artifactAbi, "arm64-v8a");
+    assert.ok((payload.files[0]?.sizeBytes ?? 0) > 0);
+
+    const broken = path.join(directory, "broken.apk");
+    await import("node:fs/promises").then((fs) => fs.writeFile(broken, "not a zip"));
+    const failed = await run(["apk", "inspect", apk, broken, "--json"], env);
+    assert.equal(failed.code, 1);
+    const failedPayload = JSON.parse(failed.stdout) as {
+      files: Array<{ path: string; error?: string }>;
+    };
+    assert.equal(failedPayload.files.length, 2);
+    assert.match(failedPayload.files[1]?.error ?? "", /not a readable APK/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("release --allow-mismatch package overrides an app package change", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-cli-"));
+  const env = { TESTFLIGHT_CONFIG: path.join(directory, "config.json") };
+  try {
+    const apk = await writeFakeApk(directory, "package.apk", ["arm64-v8a"], {
+      packageName: "dev.example.package",
+      versionCode: 1,
+      versionName: "1.0.0",
+      minSdk: 24,
+    });
+
+    const login = await run(
+      ["login", "--url", server.url, "--key", server.key, "--json"],
+      env,
+    );
+    assert.equal(login.code, 0, login.stderr);
+    const created = await run(
+      ["apps", "create", "packaged", "--package", "com.other", "--json"],
+      env,
+    );
+    assert.equal(created.code, 0, created.stderr);
+
+    const denied = await run(
+      ["release", "packaged", apk, "--version", "1.0.0", "--version-code", "1", "--json"],
+      env,
+    );
+    assert.equal(denied.code, 1, denied.stderr);
+    assert.match(denied.stderr, /apk_metadata_mismatch/);
+
+    const allowed = await run(
+      [
+        "release",
+        "packaged",
+        apk,
+        "--version",
+        "1.0.0",
+        "--version-code",
+        "1",
+        "--allow-mismatch",
+        "package",
+        "--json",
+      ],
+      env,
+    );
+    assert.equal(allowed.code, 0, allowed.stderr);
+    const payload = JSON.parse(allowed.stdout) as {
+      allowMismatch: string[];
+      uploads: Array<{ abi: string }>;
+    };
+    assert.deepEqual(payload.allowMismatch, ["package"]);
+    assert.equal(payload.uploads[0]?.abi, "arm64-v8a");
+    assert.equal(server.uploads.at(-1)?.allowMismatch, "package");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

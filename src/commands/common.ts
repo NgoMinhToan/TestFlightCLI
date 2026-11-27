@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Globals } from "../args.js";
 import { TestflightApi } from "../api.js";
+import { MISMATCH_KINDS, type MismatchKind } from "../apk-manifest.js";
 import { resolveSettings, type ResolvedSettings } from "../config.js";
 import { CliError, UsageError } from "../errors.js";
 import { confirm, isInteractive } from "../prompt.js";
@@ -95,6 +96,35 @@ export function parsePublishedAt(raw: string | undefined): string | undefined {
     throw new UsageError(`Invalid --published-at "${raw}"; expected an ISO date.`);
   }
   return date.toISOString();
+}
+
+/** De-duplicates and orders mismatch categories as package, version, sdk, abi. */
+export function mergeAllowMismatch(
+  ...lists: ReadonlyArray<readonly MismatchKind[]>
+): MismatchKind[] {
+  const merged = new Set<MismatchKind>(lists.flat());
+  return MISMATCH_KINDS.filter((kind) => merged.has(kind));
+}
+
+/**
+ * Parses `--allow-mismatch package,version`. Unknown values are rejected so a
+ * typo cannot silently weaken the server's verification.
+ */
+export function parseAllowMismatch(raw: string | undefined): MismatchKind[] {
+  if (raw === undefined) return [];
+  const kinds = new Set<MismatchKind>();
+  for (const value of raw.split(",")) {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed.length === 0) continue;
+    if (!MISMATCH_KINDS.includes(trimmed as MismatchKind)) {
+      throw new UsageError(
+        `Unknown --allow-mismatch value "${value}".`,
+        `Valid values: ${MISMATCH_KINDS.join(", ")}.`,
+      );
+    }
+    kinds.add(trimmed as MismatchKind);
+  }
+  return MISMATCH_KINDS.filter((kind) => kinds.has(kind));
 }
 
 /** Confirms a destructive action, or requires --yes when stdin is not a TTY. */

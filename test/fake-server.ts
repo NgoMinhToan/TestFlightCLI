@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { ABI_PRIORITY } from "../src/abi.js";
+import {
+  inspectApkBuffer,
+  type DetectedApk,
+  type MismatchKind,
+} from "../src/apk-manifest.js";
 
 interface FakeArtifact {
   abi: string;
@@ -29,10 +34,24 @@ interface FakeApp {
   versions: Map<string, FakeVersion>;
 }
 
+export interface RecordedUpload {
+  path: string;
+  abi: string | null;
+  allowMismatch: string | null;
+}
+
+export interface RecordedImport {
+  searchParams: Record<string, string>;
+  abi: string;
+  sha256: string;
+}
+
 export interface FakeServer {
   url: string;
   key: string;
   apps: Map<string, FakeApp>;
+  uploads: RecordedUpload[];
+  imports: RecordedImport[];
   close: () => Promise<void>;
 }
 
@@ -158,8 +177,90 @@ async function readBody(request: http.IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+const MISMATCH_KINDS: readonly MismatchKind[] = ["package", "version", "sdk", "abi"];
+
+function parseAllowMismatch(raw: string | null): Set<MismatchKind> {
+  const allowed = new Set<MismatchKind>();
+  for (const value of (raw ?? "").split(",")) {
+    const trimmed = value.trim().toLowerCase();
+    if (MISMATCH_KINDS.includes(trimmed as MismatchKind)) {
+      allowed.add(trimmed as MismatchKind);
+    }
+  }
+  return allowed;
+}
+
+async function detectOrNull(bytes: Buffer): Promise<DetectedApk | null> {
+  try {
+    return await inspectApkBuffer(bytes);
+  } catch {
+    return null;
+  }
+}
+
+interface ExpectedMetadata {
+  packageName?: string | null;
+  versionName?: string | null;
+  versionCode?: number | null;
+  minSdk?: number | null;
+  abi?: string | null;
+}
+
+/** Mirrors the server's strict checks so CLI tests exercise real behavior. */
+function verifyMetadata(
+  detected: DetectedApk,
+  expected: ExpectedMetadata,
+  allow: Set<MismatchKind>,
+): string[] {
+  const problems: string[] = [];
+  if (
+    !allow.has("package") &&
+    expected.packageName &&
+    expected.packageName !== detected.packageName
+  ) {
+    problems.push(
+      `packageName '${detected.packageName}' != app '${expected.packageName}'`,
+    );
+  }
+  if (!allow.has("version")) {
+    if (expected.versionCode !== undefined && expected.versionCode !== null) {
+      if (detected.versionCode !== expected.versionCode) {
+        problems.push(`versionCode ${detected.versionCode} != ${expected.versionCode}`);
+      }
+    }
+    if (
+      detected.versionName !== null &&
+      expected.versionName !== undefined &&
+      expected.versionName !== null &&
+      detected.versionName !== expected.versionName
+    ) {
+      problems.push(`versionName '${detected.versionName}' != '${expected.versionName}'`);
+    }
+  }
+  if (!allow.has("sdk")) {
+    if (
+      detected.minSdk !== null &&
+      expected.minSdk !== undefined &&
+      expected.minSdk !== null &&
+      detected.minSdk !== expected.minSdk
+    ) {
+      problems.push(`minSdk ${detected.minSdk} != ${expected.minSdk}`);
+    }
+  }
+  if (!allow.has("abi") && expected.abi && expected.abi !== detected.artifactAbi) {
+    problems.push(`abi ${expected.abi} != detected ${detected.artifactAbi}`);
+  }
+  return problems;
+}
+
+function mismatchFailure(response: http.ServerResponse, problems: string[]): void {
+  failure(response, 422, "apk_metadata_mismatch", problems.join("; "));
+}
+
 export async function startFakeServer(): Promise<FakeServer> {
   const apps = new Map<string, FakeApp>();
+  const uploads: RecordedUpload[] = [];
+  const imports: RecordedImport[] = [];
 
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -185,6 +286,136 @@ export async function startFakeServer(): Promise<FakeServer> {
 
       if (parts[2] === "health" && method === "GET") {
         json(response, 200, { status: "ok" });
+        return;
+      }
+
+      if (parts[2] === "import" && parts.length === 3 && method === "POST") {
+        const bytes = await readBody(request);
+        const detected = await detectOrNull(bytes);
+        if (!detected) {
+          failure(response, 400, "invalid_apk", "The body is not a readable APK");
+          return;
+        }
+        if (detected.configSplit) {
+          failure(response, 400, "invalid_apk", "Config splits cannot be imported");
+          return;
+        }
+
+        const searchParams = Object.fromEntries(url.searchParams.entries());
+        const allow = parseAllowMismatch(url.searchParams.get("allow_mismatch"));
+        const createRaw = url.searchParams.get("create");
+        const create = createRaw === "true" || createRaw === "1";
+        const appId = url.searchParams.get("appId") ?? detected.packageName;
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(appId)) {
+          failure(response, 400, "invalid_request", `Invalid app id "${appId}"`);
+          return;
+        }
+
+        let app = apps.get(appId);
+        let createdApp = false;
+        if (!app) {
+          if (!create) {
+            failure(response, 404, "app_not_found", `Unknown app "${appId}"`);
+            return;
+          }
+          const defaultName = humanize(appId.split(".").pop() ?? appId);
+          app = {
+            id: appId,
+            name: url.searchParams.get("name") ?? defaultName,
+            packageName: detected.packageName,
+            description: "",
+            developer: "",
+            icon: null,
+            versions: new Map(),
+          };
+          apps.set(appId, app);
+          createdApp = true;
+        } else if (app.packageName && app.packageName !== app.id) {
+          const problems = verifyMetadata(
+            detected,
+            { packageName: app.packageName },
+            allow,
+          );
+          if (problems.length > 0) {
+            mismatchFailure(response, problems);
+            return;
+          }
+        }
+
+        const versionName =
+          url.searchParams.get("version") ?? detected.versionName;
+        if (!versionName) {
+          failure(response, 400, "invalid_request", "A version name is required");
+          return;
+        }
+        const versionCodeRaw = url.searchParams.get("versionCode");
+        const versionCode = versionCodeRaw
+          ? Number(versionCodeRaw)
+          : detected.versionCode;
+        if (!Number.isSafeInteger(versionCode) || versionCode <= 0) {
+          failure(response, 400, "invalid_request", "Invalid versionCode");
+          return;
+        }
+
+        const existingVersion = app.versions.get(versionName);
+        const versionProblems = existingVersion
+          ? verifyMetadata(
+              detected,
+              {
+                versionName,
+                versionCode: existingVersion.versionCode,
+                minSdk: existingVersion.minSdk,
+              },
+              allow,
+            )
+          : verifyMetadata(detected, { versionName, versionCode }, allow);
+        if (versionProblems.length > 0) {
+          mismatchFailure(response, versionProblems);
+          return;
+        }
+
+        let createdVersion = false;
+        let version = existingVersion;
+        if (!version) {
+          version = {
+            versionName,
+            versionCode,
+            minSdk: detected.minSdk,
+            releaseNotes: url.searchParams.get("releaseNotes"),
+            publishedAt:
+              url.searchParams.get("publishedAt") ?? new Date().toISOString(),
+            artifacts: new Map(),
+          };
+          app.versions.set(versionName, version);
+          createdVersion = true;
+        } else if (url.searchParams.get("releaseNotes") !== null) {
+          version.releaseNotes = url.searchParams.get("releaseNotes");
+        }
+
+        const abi = detected.artifactAbi;
+        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        const existed = version.artifacts.has(abi);
+        version.artifacts.set(abi, {
+          abi,
+          bytes,
+          sha256,
+          filename: `${abi}-${sha256.slice(0, 16)}.apk`,
+        });
+        imports.push({ searchParams, abi, sha256 });
+
+        json(response, createdApp || createdVersion || !existed ? 201 : 200, {
+          app: appDetail(app),
+          version: versionAdmin(appId, version),
+          detected,
+          artifact: {
+            abi,
+            sizeBytes: bytes.length,
+            sha256,
+            downloadPath: `/api/v1/apps/${appId}/versions/${versionName}/download?abi=${abi}`,
+          },
+          createdApp,
+          createdVersion,
+        });
         return;
       }
 
@@ -392,6 +623,50 @@ export async function startFakeServer(): Promise<FakeServer> {
           return;
         }
 
+        if (parts.length === 7 && parts[6] === "artifacts" && method === "PUT") {
+          const bytes = await readBody(request);
+          const detected = await detectOrNull(bytes);
+          if (!detected) {
+            failure(response, 400, "invalid_apk", "The body is not a readable APK");
+            return;
+          }
+          const allow = parseAllowMismatch(url.searchParams.get("allow_mismatch"));
+          uploads.push({
+            path: url.pathname,
+            abi: null,
+            allowMismatch: url.searchParams.get("allow_mismatch"),
+          });
+          const problems = verifyMetadata(
+            detected,
+            {
+              packageName:
+                app.packageName && app.packageName !== app.id ? app.packageName : null,
+              versionName: version.versionName,
+              versionCode: version.versionCode,
+              minSdk: version.minSdk,
+            },
+            allow,
+          );
+          if (problems.length > 0) {
+            mismatchFailure(response, problems);
+            return;
+          }
+          const abi = detected.artifactAbi;
+          const sha256 = createHash("sha256").update(bytes).digest("hex");
+          const existed = version.artifacts.has(abi);
+          version.artifacts.set(abi, {
+            abi,
+            bytes,
+            sha256,
+            filename: `${abi}-${sha256.slice(0, 16)}.apk`,
+          });
+          json(response, existed ? 200 : 201, {
+            version: versionAdmin(appId, version),
+            detected,
+          });
+          return;
+        }
+
         if (parts.length === 8 && parts[6] === "artifacts") {
           const abi = parts[7] ?? "";
           if (method === "PUT") {
@@ -400,6 +675,33 @@ export async function startFakeServer(): Promise<FakeServer> {
               return;
             }
             const bytes = await readBody(request);
+            const detected = await detectOrNull(bytes);
+            const allow = parseAllowMismatch(url.searchParams.get("allow_mismatch"));
+            uploads.push({
+              path: url.pathname,
+              abi,
+              allowMismatch: url.searchParams.get("allow_mismatch"),
+            });
+            if (detected) {
+              const problems = verifyMetadata(
+                detected,
+                {
+                  packageName:
+                    app.packageName && app.packageName !== app.id
+                      ? app.packageName
+                      : null,
+                  versionName: version.versionName,
+                  versionCode: version.versionCode,
+                  minSdk: version.minSdk,
+                  abi,
+                },
+                allow,
+              );
+              if (problems.length > 0) {
+                mismatchFailure(response, problems);
+                return;
+              }
+            }
             const sha256 = createHash("sha256").update(bytes).digest("hex");
             const existed = version.artifacts.has(abi);
             version.artifacts.set(abi, {
@@ -410,6 +712,7 @@ export async function startFakeServer(): Promise<FakeServer> {
             });
             json(response, existed ? 200 : 201, {
               version: versionAdmin(appId, version),
+              detected,
             });
             return;
           }
@@ -438,6 +741,8 @@ export async function startFakeServer(): Promise<FakeServer> {
     url: `http://127.0.0.1:${address.port}`,
     key: KEY,
     apps,
+    uploads,
+    imports,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

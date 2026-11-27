@@ -216,23 +216,99 @@ testflight artifacts delete <appId> <versionName> <abi> [--yes]
 
 Xoá artifact cuối cùng đưa version trở lại trạng thái draft. Dùng `versions abis` nếu chỉ cần xem.
 
-## Phát hành
+## Kiểm tra APK
+
+### `apk inspect`
 
 ```text
-testflight release <appId> <apk...> --version <name> --version-code <n> [options]
+testflight apk inspect <apk...> [--json]
+```
+
+Đọc **ZIP central directory** và `AndroidManifest.xml` nhị phân (AXML) ngay trên máy — không cần
+server hay management key. In `packageName`, `versionCode`, `versionName`, `minSdk`, `targetSdk`,
+các ABI trong `lib/<abi>/`, `debuggable`, `testOnly`, `split` và `configSplit`.
+
+```bash
+testflight apk inspect app-arm64-v8a-release.apk
+testflight apk inspect build/*.apk --json
+```
+
+`--json` trả về `{ "files": [...] }`; file đọc được có `path`, `fileName`, `sizeBytes`, `metadata`
+và `artifactAbi`, file lỗi có `{ "path": ..., "error": ... }`. Nếu bất kỳ file nào lỗi, lệnh vẫn in
+hết kết quả rồi thoát với exit code `1`.
+
+Một file ZIP64, manifest thiếu/hỏng hoặc archive không phải APK không được đoán bừa: lệnh báo lỗi
+và không đưa ra metadata giả.
+
+## Phát hành
+
+### `publish` — APK-only, server tự suy ABI
+
+```text
+testflight publish <apk...> [--app-id <id>] [--create] [options]
+```
+
+Dùng endpoint mới `POST /api/v1/import`: server tự đọc APK, suy ABI và tạo app/version nếu cần.
+
+| Option | Ý nghĩa |
+|---|---|
+| `--app-id <id>` | Id ứng dụng; mặc định là `packageName` trong APK |
+| `--create` | Tạo app nếu chưa tồn tại (mặc định trả 404) |
+| `--name <text>` | Tên hiển thị dùng khi `--create` |
+| `--version <name>` | Tên version; mặc định lấy từ APK |
+| `--version-code <n>` | `versionCode`; mặc định lấy từ APK |
+| `--release-notes <text>` | Ghi chú phát hành |
+| `--notes-file <path>` | Đọc ghi chú từ file UTF-8 |
+| `--published-at <iso>` | Thời điểm publish |
+| `--allow-mismatch <csv>` | Bỏ kiểm tra chủ ý: `package,version,sdk,abi` |
+| `-n, --dry-run` | Kiểm tra và in kế hoạch hoàn toàn offline |
+| `--no-progress` | Ẩn thanh tiến trình |
+
+CLI kiểm tra **toàn bộ** APK trước khi gửi: mọi file phải cùng `packageName`, `versionCode` và
+`versionName` (bỏ qua `versionName` null), không trùng ABI, không phải config split. Nếu lệch, lệnh
+dừng với exit code `2` và **không tạo gì** trên server.
+
+Nếu bạn truyền `--version`/`--version-code` khác giá trị trong APK, CLI tự thêm
+`allow_mismatch=version`; giá trị `--allow-mismatch` của bạn được hợp nhất vào đó. Ghi chú dài hơn
+4 KiB không nhét vừa query string: CLI import trước, rồi gọi `PUT /versions/:v` để ghi ghi chú.
+Import chạy tuần tự từng APK và dừng ở lỗi đầu tiên.
+
+```bash
+# App id và version lấy từ APK, tạo app nếu chưa có
+testflight publish app-arm64-v8a-release.apk --create
+
+# Ba split APK cùng một version
+testflight publish build/app-arm64-v8a.apk build/app-armeabi-v7a.apk build/app-x86_64.apk \
+  --app-id crm --json
+
+# Xem trước, không cần server/key
+testflight publish app.apk --dry-run --json
+```
+
+`--dry-run --json` trả về `dryRun`, `appId`, `create`, `versionName`, `versionCode`,
+`versionNameSource`, `versionCodeSource`, `allowMismatch`, `files` và `imports: []`.
+
+Server cũ không có `/import` trả 404; CLI thêm gợi ý nâng cấp server. `release` vẫn dùng các route
+artifact cũ nên tiếp tục chạy với server cũ.
+
+### `release`
+
+```text
+testflight release <appId> <apk...> [--version <name>] [--version-code <n>] [options]
 alias: testflight push ...
 ```
 
 | Option | Ý nghĩa |
 |---|---|
-| `--version <name>` | **Bắt buộc** — tên version, ví dụ `1.4.2` |
-| `--version-code <n>` | **Bắt buộc** — số nguyên dương |
+| `--version <name>` | Tên version; mặc định lấy `versionName` từ APK đầu tiên |
+| `--version-code <n>` | Số nguyên dương; mặc định lấy `versionCode` từ APK đầu tiên |
 | `--abi <abi>` | Lặp lại được hoặc phân tách bằng dấu phẩy; một giá trị cho mỗi APK |
 | `--universal` | Ép một APK duy nhất thành `universal` |
 | `--min-sdk <n>` | `minSdk` |
 | `--release-notes <text>` | Ghi chú phát hành |
 | `--notes-file <path>` | Đọc ghi chú từ file UTF-8 (không dùng cùng `--release-notes`) |
 | `--published-at <iso>` | Thời điểm publish; mặc định server tự đặt |
+| `--allow-mismatch <csv>` | Bỏ kiểm tra chủ ý: `package`, `version`, `sdk`, `abi`; hợp nhất với các giá trị CLI tự thêm khi flag lệch APK |
 | `--create` | Tạo app nếu chưa tồn tại |
 | `--name`, `--package`, `--description`, `--developer` | Metadata dùng khi `--create` |
 | `-f, --force` | Ghi đè artifact đã có và cập nhật metadata |
@@ -243,7 +319,10 @@ alias: testflight push ...
 Ví dụ:
 
 ```bash
-# ABI tự nhận diện từ lib/<abi>/ hoặc tên file
+# Version name/code lấy từ AndroidManifest.xml của APK
+testflight release crm app-arm64-v8a.apk
+
+# Ghi đè version name/code (CLI tự gửi allow_mismatch=version nếu lệch APK)
 testflight release crm app-arm64-v8a.apk --version 1.4.2 --version-code 142
 
 # Split APK theo kiến trúc
@@ -265,13 +344,27 @@ testflight release crm app.apk --version 1.4.2 --version-code 142 --force
 
 Với mỗi APK, theo thứ tự:
 
-1. `--abi` được truyền → dùng đúng giá trị đó.
-2. Đọc **ZIP central directory**, tìm native library trong `lib/<abi>/`:
+1. `--abi` được truyền → dùng đúng giá trị đó (CLI thêm `allow_mismatch=abi` nếu khác APK).
+2. Đọc `AndroidManifest.xml` và tìm native library trong `lib/<abi>/`:
    - đúng **một** ABI → dùng ABI đó;
-   - **nhiều** ABI → `universal`;
-   - **không** có native library → bước 3.
-3. Tên file chứa token ABI (`app-arm64-v8a.apk`, `release_x86_64.apk`) → dùng token đó.
-4. Không xác định được → `universal`.
+   - **không** hoặc **nhiều** ABI → `universal`.
+3. Chỉ khi **không đọc được manifest** (ví dụ ZIP64), mới đoán token ABI trong tên file
+   (`app-arm64-v8a.apk`, `release_x86_64.apk`), rồi cuối cùng là `universal`. CLI in cảnh báo vì
+   server có thể từ chối file đó.
+
+Metadata trong APK là nguồn chân lý; tên file không được ghi đè manifest đọc được. Nếu bạn truyền
+`--version`/`--version-code`/`--min-sdk` khác APK, CLI thêm đúng loại vào `allow_mismatch`
+(`version`/`sdk`). Mọi APK trong một lần `release` phải cùng package và version.
+
+`--allow-mismatch` dùng khi bạn **chủ ý** thay đổi một trường, ví dụ app đã đổi package hoặc version
+đã publish với metadata khác APK. Giá trị được hợp nhất với các loại CLI tự suy ra và gửi cho mọi
+artifact, theo thứ tự `package,version,sdk,abi`.
+
+```bash
+# App "crm" đã có package com.other nhưng APK mang package mới
+testflight release crm app.apk --version 0.2.0 --version-code 18 \
+  --force --allow-mismatch package
+```
 
 ABI hợp lệ, theo thứ tự ưu tiên của server: `universal`, `arm64-v8a`, `armeabi-v7a`, `x86_64`,
 `x86`, `riscv64`, `armeabi`. Mỗi version có tối đa một APK cho mỗi ABI; trùng ABI là lỗi và CLI
@@ -303,7 +396,9 @@ dừng trước khi upload. Artifact `universal` luôn là artifact mặc địn
 ```
 
 `--dry-run --json` trả về `dryRun`, `appExists`, `versionExists`, `needsForce`, metadata
-differences và danh sách artifact sẽ upload.
+differences và danh sách artifact sẽ upload. Cả `--json` thật lẫn dry-run có thêm
+`versionNameInferred`/`versionCodeInferred`, `detected`, `allowMismatch`; mỗi upload có `detected`
+(metadata server đọc được từ APK).
 
 ## Tải APK
 
@@ -336,7 +431,9 @@ testflight download crm 1.4.2 --abi arm64-v8a --out ./builds
 | `apps icon` | `PUT`/`DELETE /api/v1/apps/:appId/icon` |
 | `versions list`, `versions get/abis` | `GET /api/v1/apps/:appId/versions[/:version]` (admin, gồm draft) |
 | `versions create/update/delete` | `POST`, `PUT`, `DELETE /api/v1/apps/:appId/versions[/:version]` |
-| `release` | `GET` kiểm tra → `POST /versions` → `PUT .../artifacts/:abi` (hoặc `PUT /versions/:v`) |
+| `release` | `GET` kiểm tra → `POST /versions` → `PUT .../artifacts/:abi[?allow_mismatch=]` (hoặc `PUT /versions/:v`) |
+| `publish` | `POST /api/v1/import?…[&allow_mismatch=]`, sau đó `PUT /versions/:v` nếu notes > 4 KiB |
+| `apk inspect` | Không gọi server |
 | `download` | `GET /api/v1/apps/:appId/versions/:version/download[?abi=]` |
 | `artifacts delete` | `DELETE .../artifacts/:abi` |
 

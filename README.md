@@ -85,6 +85,19 @@ testflight apps create crm --name "Internal CRM" --package com.company.crm
 testflight release crm app-arm64-v8a.apk --version 1.4.2 --version-code 142
 ```
 
+Hoặc để server tự đọc APK, suy ABI và tạo app/version trong một lệnh:
+
+```bash
+testflight publish build/app-arm64-v8a-release.apk build/app-x86_64-release.apk --create
+```
+
+`publish` dùng `POST /api/v1/import` (cần server mới; `release` vẫn chạy với server cũ). Xem
+metadata trước khi gửi, hoàn toàn offline:
+
+```bash
+testflight apk inspect build/app-arm64-v8a-release.apk --json
+```
+
 Sau đó kiểm tra và tải lại:
 
 ```bash
@@ -130,9 +143,18 @@ Chi tiết về profile, kiểm tra key và bảo mật: [Cấu hình](https://g
 ## Các lệnh thường dùng
 
 ```bash
+# Version name/code lấy thẳng từ AndroidManifest.xml của APK
+testflight release crm app-arm64-v8a.apk
+
 # Split APK theo kiến trúc
 testflight push crm app-arm64-v8a.apk app-x86_64.apk \
   --version 1.4.2 --version-code 142 --abi arm64-v8a --abi x86_64
+
+# APK-only: server tự suy ABI, tạo app nếu chưa có
+testflight publish app-arm64-v8a.apk --create
+
+# Kiểm tra metadata offline
+testflight apk inspect app-arm64-v8a.apk --json
 
 # Tạo app mới kèm icon trong một lần
 testflight apps create newapp --name "New App" --icon ./icon.png
@@ -152,9 +174,12 @@ Danh sách đầy đủ mọi lệnh và cờ:
 
 ## Release hoạt động thế nào
 
-- **ABI** được chọn theo thứ tự: `--abi` → native library trong APK (`lib/<abi>/`) → chuỗi ABI
-  trong tên file (ví dụ `app-arm64-v8a.apk`, không phân biệt hoa thường) → `universal`. ABI hỗ trợ:
-  `universal`, `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`, `riscv64`, `armeabi`.
+- **ABI** được chọn theo thứ tự: `--abi` → `AndroidManifest.xml` + native library
+  (`lib/<abi>/`: đúng một ABI thì dùng, không hoặc nhiều ABI thì `universal`) → chuỗi ABI trong tên
+  file, chỉ khi manifest không đọc được (ví dụ ZIP64). ABI hỗ trợ: `universal`, `arm64-v8a`,
+  `armeabi-v7a`, `x86_64`, `x86`, `riscv64`, `armeabi`.
+- **Version name/code** lấy từ `--version`/`--version-code`; thiếu thì đọc từ APK đầu tiên. Mọi APK
+  trong một lần `release`/`publish` phải cùng package và version.
 - Version mới được tạo dạng **draft**; nó chỉ xuất hiện trong catalog công khai sau APK đầu tiên.
 - Draft nhận thêm ABI mà không cần `--force`. Version đã publish **có artifact cùng ABI**, hoặc
   metadata thay đổi, cần `--force`/`--yes` hay xác nhận trong terminal.
