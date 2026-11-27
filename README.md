@@ -56,8 +56,12 @@ bằng `node -p 'require("./data/config.json").management_key'`, hoặc
 ```bash
 npm install -g my-testflight-cli
 testflight --version
-# 0.2.0
+# bản mới nhất trên npm; nhánh này là 0.2.0
 ```
+
+> **0.2.0 chưa được publish lên npm tại thời điểm viết.** `npm install -g` hiện cài bản mới nhất
+> (0.1.1), chưa có `publish`/`apk inspect`. Dùng phần "Từ source" bên dưới để chạy 0.2.0, hoặc chờ
+> publish rồi dùng các lệnh `npx ...@latest` trong Quick start.
 
 Không muốn cài toàn cục: `npx my-testflight-cli@latest --help`. Lệnh có alias ngắn `tf`.
 
@@ -181,8 +185,8 @@ Danh sách đầy đủ mọi lệnh và cờ:
 
 ## Trạng thái (Status)
 
-Phiên bản hiện tại **0.2.0** (2026-11-27). Đây là bản phát hành sớm: lệnh và cờ có thể thay đổi
-trước `1.0`. CLI 0.2.x nhắm tới API `/api/v1` hiện hành của MyTestflightServer. Bản 0.2.0 thêm
+Phiên bản trong nhánh này **0.2.0** (2026-11-27; chưa publish npm tại thời điểm viết). Đây là bản
+phát hành sớm: lệnh và cờ có thể thay đổi trước `1.0`. CLI 0.2.x nhắm tới API `/api/v1` hiện hành của MyTestflightServer. Bản 0.2.0 thêm
 version name linh hoạt, sửa lỗi upload stream đọc mất body lỗi của server (khiến CI báo
 `http_422` thay vì `apk_metadata_mismatch`), và bổ sung quick command `npx`. CI chạy typecheck,
 test và build trên Node 22 và 24; các bản npm được publish kèm provenance. Theo dõi
