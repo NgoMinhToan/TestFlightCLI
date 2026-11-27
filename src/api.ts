@@ -561,9 +561,17 @@ export class TestflightApi {
     }
 
     if (!response.ok) {
-      source.destroy();
-      meter.destroy();
-      throw await this.toApiError(response);
+      // Read the error body before tearing down the request streams. If they
+      // are destroyed first, the server's `{ error: { code, message } }` body
+      // can arrive truncated and `toApiError` falls back to `http_<status>`.
+      let error: ApiError;
+      try {
+        error = await this.toApiError(response);
+      } finally {
+        source.destroy();
+        meter.destroy();
+      }
+      throw error;
     }
 
     await finished;

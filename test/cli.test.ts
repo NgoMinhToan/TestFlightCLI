@@ -237,6 +237,72 @@ test("a full login → create → release → inspect → download flow", async 
   }
 });
 
+test("releases, reads and downloads a version name with spaces, '+', parentheses and Unicode", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-cli-"));
+  try {
+    const env = {
+      TESTFLIGHT_CONFIG: path.join(directory, "config", "config.json"),
+    } satisfies NodeJS.ProcessEnv;
+    const login = await run(
+      ["login", "--url", server.url, "--key", server.key, "--json"],
+      env,
+    );
+    assert.equal(login.code, 0, login.stderr);
+
+    const versionName = "Bản nội bộ (beta)";
+    const apk = await writeFakeApk(directory, "flex-arm64-v8a.apk", ["arm64-v8a"], {
+      packageName: "com.example.flex",
+      versionCode: 42,
+      versionName: "1.0.0+42",
+      minSdk: 26,
+    });
+    const created = await run(
+      ["apps", "create", "flex", "--package", "com.example.flex", "--json"],
+      env,
+    );
+    assert.equal(created.code, 0, created.stderr);
+
+    const release = await run(
+      ["release", "flex", apk, "--version", versionName, "--version-code", "42", "--json"],
+      env,
+    );
+    assert.equal(release.code, 0, release.stderr);
+    const released = JSON.parse(release.stdout) as {
+      allowMismatch: string[];
+      version: { versionName: string };
+    };
+    assert.deepEqual(released.allowMismatch, ["version"]);
+    assert.equal(released.version.versionName, versionName);
+
+    const fetched = await run(["versions", "get", "flex", versionName, "--json"], env);
+    assert.equal(fetched.code, 0, fetched.stderr);
+    assert.equal(
+      (JSON.parse(fetched.stdout) as { version: { versionName: string } }).version.versionName,
+      versionName,
+    );
+
+    const downloadDirectory = path.join(directory, "downloads");
+    await mkdir(downloadDirectory, { recursive: true });
+    const downloaded = await run(
+      ["download", "flex", versionName, "--out", downloadDirectory, "--json"],
+      env,
+    );
+    assert.equal(downloaded.code, 0, downloaded.stderr);
+    const downloadJson = JSON.parse(downloaded.stdout) as { path: string; verified: boolean };
+    assert.equal(downloadJson.verified, true);
+    assert.deepEqual(await readFile(downloadJson.path), await readFile(apk));
+
+    const rejected = await run(
+      ["versions", "create", "flex", "../escape", "--version-code", "1"],
+      env,
+    );
+    assert.equal(rejected.code, 2);
+    assert.match(rejected.stderr, /Invalid version name/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("apk inspect prints metadata offline and reports unreadable files", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "testflight-cli-"));
   const env = { TESTFLIGHT_CONFIG: path.join(directory, "config.json") };

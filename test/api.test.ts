@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
+import type { Abi } from "../src/abi.js";
 import { TestflightApi } from "../src/api.js";
 import { ApiError } from "../src/errors.js";
 import { startFakeServer, type FakeServer } from "./fake-server.js";
@@ -149,6 +150,207 @@ test("lets the server infer the artifact ABI and records allow_mismatch", async 
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reads the error body even when the server rejects before consuming the body", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-api-"));
+  try {
+    await api.createApp({ id: "early", name: "Early", packageName: "com.example.early" });
+    await api.createVersion("early", { versionName: "1.0.0", versionCode: 1 });
+    const apkPath = await writeFakeApk(
+      directory,
+      "early.apk",
+      ["arm64-v8a"],
+      {
+        packageName: "com.example.early",
+        versionCode: 1,
+        versionName: "1.0.0",
+      },
+      { paddingBytes: 3 * 1024 * 1024 },
+    );
+
+    await assert.rejects(
+      () => api.uploadArtifact("early", "1.0.0", "__early_422__" as Abi, apkPath),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 422);
+        assert.equal(error.code, "apk_metadata_mismatch");
+        assert.match(error.message, /before reading the request body/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("streams a success then a sequence of failures over one keep-alive connection", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-api-"));
+  try {
+    await api.createApp({
+      id: "keepalive",
+      name: "Keep Alive",
+      packageName: "com.example.keepalive",
+    });
+    await api.createVersion("keepalive", { versionName: "1.0.0", versionCode: 1 });
+    const arm64 = await writeFakeApk(
+      directory,
+      "keepalive-arm64-v8a.apk",
+      ["arm64-v8a"],
+      {
+        packageName: "com.example.keepalive",
+        versionCode: 1,
+        versionName: "1.0.0",
+      },
+      { paddingBytes: 1024 * 1024 },
+    );
+
+    // Reuse the same client (and therefore the same pooled connection) so each
+    // failed upload exercises the error path right after a successful stream.
+    for (let round = 0; round < 4; round += 1) {
+      const uploaded = await api.uploadArtifact("keepalive", "1.0.0", "arm64-v8a", arm64);
+      assert.equal(uploaded.verified, true);
+      assert.equal(uploaded.detected?.artifactAbi, "arm64-v8a");
+
+      const wrongAbi = round % 2 === 0 ? "__early_422__" : "x86_64";
+      await assert.rejects(
+        () => api.uploadArtifact("keepalive", "1.0.0", wrongAbi as Abi, arm64),
+        (error: unknown) => {
+          assert.ok(error instanceof ApiError, `round ${round}: ${String(error)}`);
+          assert.equal(error.status, 422);
+          assert.equal(error.code, "apk_metadata_mismatch");
+          return true;
+        },
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("accepts flexible version names and encodes them in URL paths", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-api-"));
+  try {
+    const cases = [
+      { appId: "flex-plus", versionName: "1.0.0+42", versionCode: 42 },
+      { appId: "flex-unicode", versionName: "Bản nội bộ (beta)", versionCode: 43 },
+    ];
+    for (const item of cases) {
+      await api.createApp({
+        id: item.appId,
+        name: item.appId,
+        packageName: `com.example.${item.appId.replaceAll("-", "")}`,
+      });
+      await api.createVersion(item.appId, {
+        versionName: item.versionName,
+        versionCode: item.versionCode,
+      });
+
+      const fetched = await api.getVersionAdmin(item.appId, item.versionName);
+      assert.equal(fetched.versionName, item.versionName);
+
+      const apkPath = await writeFakeApk(
+        directory,
+        `${item.appId}.apk`,
+        ["arm64-v8a"],
+        {
+          packageName: `com.example.${item.appId.replaceAll("-", "")}`,
+          versionCode: item.versionCode,
+          versionName: item.versionName,
+        },
+      );
+      const uploaded = await api.uploadArtifact(
+        item.appId,
+        item.versionName,
+        "arm64-v8a",
+        apkPath,
+      );
+      assert.equal(uploaded.verified, true);
+
+      const destination = path.join(directory, "downloads", `${item.appId}.apk`);
+      const downloaded = await api.downloadArtifact(
+        item.appId,
+        item.versionName,
+        "arm64-v8a",
+        destination,
+      );
+      assert.equal(downloaded.verified, true);
+      assert.deepEqual(await readFile(destination), await readFile(apkPath));
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("package conflicts and locks surface as package_in_use and package_locked", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "testflight-api-"));
+  try {
+    await api.createApp({
+      id: "pkg-first",
+      name: "First",
+      packageName: "com.example.sharedpkg",
+    });
+    await assert.rejects(
+      () =>
+        api.createApp({
+          id: "pkg-second",
+          name: "Second",
+          packageName: "com.example.sharedpkg",
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 409);
+        assert.equal(error.code, "package_in_use");
+        return true;
+      },
+    );
+
+    await api.createApp({
+      id: "pkg-locked",
+      name: "Locked",
+      packageName: "com.example.lockedpkg",
+    });
+    // Changing the package is fine until an APK is uploaded.
+    const renamed = await api.updateApp("pkg-locked", {
+      packageName: "com.example.lockedpkg2",
+    });
+    assert.equal(renamed.packageName, "com.example.lockedpkg2");
+
+    await api.createVersion("pkg-locked", { versionName: "1.0.0", versionCode: 1 });
+    const apkPath = await writeFakeApk(directory, "locked.apk", ["arm64-v8a"], {
+      packageName: "com.example.lockedpkg2",
+      versionCode: 1,
+      versionName: "1.0.0",
+    });
+    await api.uploadArtifact("pkg-locked", "1.0.0", "arm64-v8a", apkPath);
+
+    await assert.rejects(
+      () => api.updateApp("pkg-locked", { packageName: "com.example.movedpkg" }),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 409);
+        assert.equal(error.code, "package_locked");
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the server rejects path-unsafe version names with version_name_invalid", async () => {
+  await api.createApp({ id: "unsafe", name: "Unsafe", packageName: "com.example.unsafe" });
+  for (const versionName of ["../escape", "a/b", "a\\b", " padded", "trailing ", "."]) {
+    await assert.rejects(
+      () => api.createVersion("unsafe", { versionName, versionCode: 1 }),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError, `"${versionName}": ${String(error)}`);
+        assert.equal(error.status, 400);
+        assert.equal(error.code, "version_name_invalid");
+        return true;
+      },
+    );
   }
 });
 

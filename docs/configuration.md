@@ -3,6 +3,9 @@
 CLI cần hai giá trị: **base URL** của MyTestflightServer và **management key**. Chúng có thể đến từ
 flag, biến môi trường hoặc profile đã lưu.
 
+Không cài toàn cục: thay `testflight` bằng `npx my-testflight-cli@latest`, ví dụ
+`npx my-testflight-cli@latest login --url https://apps.example.com --key "$KEY"`.
+
 ## Kiểm tra key
 
 `testflight login` mặc định kiểm tra trước khi lưu:
@@ -97,10 +100,12 @@ CLI tự đọc `.env` ở thư mục hiện tại nếu có; biến môi trư�
 ```bash
 TESTFLIGHT_BASE_URL=https://apps.example.com \
 TESTFLIGHT_MANAGEMENT_KEY="$TESTFLIGHT_KEY" \
-testflight release crm app.apk --version 1.4.2 --version-code 142
+npx my-testflight-cli@latest release crm app.apk --version 1.4.2 --version-code 142
 ```
 
 `testflight doctor` sẽ kiểm tra kết nối và key mà không cần file cấu hình khi cả hai biến đã có.
+Version name không ảnh hưởng cấu hình; xem
+[quy tắc version name](./commands.md#quy-tắc-version-name).
 
 ## Bảo mật
 

@@ -112,7 +112,8 @@ const HELP: Record<string, HelpEntry> = {
     summary: "Create an app entry in the catalog.",
     usage: ["testflight apps create <appId> [options]"],
     details: [
-      "appId and version names must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$.",
+      "appId must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$; version names are",
+      "more flexible (see `testflight versions create --help`).",
       "Without --name the server humanizes the id (demo-app → Demo App).",
     ],
     options: [
@@ -203,6 +204,9 @@ const HELP: Record<string, HelpEntry> = {
     details: [
       "A draft is visible to the admin GET routes but not in the public catalog",
       "until its first APK is uploaded. `release` does this automatically.",
+      "Version names allow spaces, '+', parentheses and Unicode (1-200 UTF-8",
+      "bytes) but reject path separators, control characters and leading or",
+      "trailing spaces/dots, so they stay safe as one URL path segment.",
     ],
     options: [
       ["--version-code <n>", "Required positive integer"],
@@ -244,8 +248,10 @@ const HELP: Record<string, HelpEntry> = {
     ],
     details: [
       "The version name/code come from --version/--version-code, or from the",
-      "first APK's binary AndroidManifest.xml when omitted. All APKs must",
-      "describe the same package and version. Each APK's ABI comes from its",
+      "first APK's binary AndroidManifest.xml when omitted. If the manifest's",
+      "versionName is a resource reference, the name falls back to",
+      "String(versionCode). All APKs must describe the same package and",
+      "version. Each APK's ABI comes from its",
       "manifest and lib/<abi>/ entries (zero or several ⇒ universal); pass",
       "--abi to override. Existing drafts gain artifacts; a published version",
       "is only replaced with --force (or an interactive confirmation).",
@@ -312,7 +318,9 @@ const HELP: Record<string, HelpEntry> = {
       "Inspects every APK first, requires one package/version per batch and",
       "stops before creating anything if they disagree. App id defaults to the",
       "APK's package name; version name/code default to the APK's manifest.",
-      "The server infers the ABI. POST /api/v1/import must exist (upgrade old",
+      "When the manifest's versionName is a resource reference, the CLI omits",
+      "the version query and the server resolves it (falling back to",
+      "String(versionCode)). The server infers the ABI. POST /api/v1/import must exist (upgrade old",
       "servers); `release` keeps using the older artifact routes.",
       "Release notes above 4 KiB are sent with a follow-up PUT instead of the",
       "import query string. --dry-run is fully offline.",

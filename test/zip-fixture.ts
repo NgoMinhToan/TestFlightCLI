@@ -351,6 +351,11 @@ export interface FakeApkOptions {
   manifest?: Buffer | string | null;
   /** Use a UTF-8 string pool instead of UTF-16LE. */
   utf8Strings?: boolean;
+  /**
+   * Adds `assets/padding.bin` with this many zero bytes. Lets a streamed
+   * upload test use a multi-MB body without committing a binary fixture.
+   */
+  paddingBytes?: number;
 }
 
 /**
@@ -383,6 +388,13 @@ export async function writeFakeApk(
       method,
     })),
   ];
+  if (options.paddingBytes && options.paddingBytes > 0) {
+    entries.push({
+      name: "assets/padding.bin",
+      data: Buffer.alloc(options.paddingBytes, 0x61),
+      method,
+    });
+  }
   const filePath = path.join(directory, fileName);
   await writeFile(filePath, buildZip(entries));
   return filePath;

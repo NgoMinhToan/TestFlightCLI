@@ -11,6 +11,7 @@ import {
 import { artifactAbiOf, type DetectedApk, type MismatchKind } from "../apk-manifest.js";
 import { scanApk } from "../apk.js";
 import { CliError, UsageError } from "../errors.js";
+import { isValidVersionName, VERSION_NAME_RULE } from "../validate.js";
 import { printHelp } from "../help.js";
 import {
   clearProgress,
@@ -36,6 +37,7 @@ import {
   parsePublishedAt,
   parseVersionCode,
   requireId,
+  requireVersionName,
   resolveReleaseNotes,
 } from "./common.js";
 
@@ -50,9 +52,10 @@ interface InspectedFile {
 
 interface PublishIdentity {
   appId: string;
-  versionName: string;
+  /** `null` when the APK uses a resource reference and no --version was given. */
+  versionName: string | null;
   versionCode: number;
-  versionNameSource: "flag" | "apk";
+  versionNameSource: "flag" | "apk" | "server";
   versionCodeSource: "flag" | "apk";
   create: boolean;
   allowMismatch: MismatchKind[];
@@ -146,14 +149,18 @@ function resolveIdentity(
   const versionFlag = stringValue(values, "version");
   const versionCodeFlag = stringValue(values, "version-code");
   if (versionFlag !== undefined) {
-    requireId(versionFlag, "version name", "testflight publish <apk...>");
+    requireVersionName(versionFlag, "version name", "testflight publish <apk...>");
   }
 
+  // A null name means "did not resolve a literal": omit the `version` query
+  // entirely and let the server resolve it (it falls back to versionCode).
   const versionName = versionFlag ?? first.detected.versionName;
-  if (versionName === null || versionName === undefined) {
+  const versionNameSource: PublishIdentity["versionNameSource"] =
+    versionFlag !== undefined ? "flag" : versionName !== null ? "apk" : "server";
+  if (versionName !== null && !isValidVersionName(versionName)) {
     throw new UsageError(
-      "Cannot infer the version name from the APK.",
-      "This manifest uses a resource reference; pass --version <name> explicitly.",
+      `Invalid version name "${versionName}" from the APK.`,
+      VERSION_NAME_RULE,
     );
   }
 
@@ -188,7 +195,7 @@ function resolveIdentity(
     appId,
     versionName,
     versionCode,
-    versionNameSource: versionFlag === undefined ? "apk" : "flag",
+    versionNameSource,
     versionCodeSource: versionCodeFlag === undefined ? "apk" : "flag",
     create: booleanValue(values, "create"),
     allowMismatch: mergeAllowMismatch([...kinds]),
@@ -197,13 +204,14 @@ function resolveIdentity(
 }
 
 function printDryRun(identity: PublishIdentity, files: readonly InspectedFile[]): void {
+  const versionLabel = identity.versionName ?? "(server resolves)";
   heading(
-    `Plan: publish ${files.length} APK(s) to ${identity.appId} ${identity.versionName} (${identity.versionCode})`,
+    `Plan: publish ${files.length} APK(s) to ${identity.appId} ${versionLabel} (${identity.versionCode})`,
   );
   line();
   line(`  App:      ${identity.appId}${identity.create ? " (create if missing)" : ""}`);
   line(
-    `  Version:  ${identity.versionName} (${identity.versionCode})` +
+    `  Version:  ${versionLabel} (${identity.versionCode})` +
       ` [name from ${identity.versionNameSource}, code from ${identity.versionCodeSource}]`,
   );
   if (identity.allowMismatch.length > 0) {
@@ -329,7 +337,7 @@ export async function runPublish(argv: string[]): Promise<number> {
         {
           appId: identity.appId,
           create: create || undefined,
-          versionName: identity.versionName,
+          versionName: identity.versionName ?? undefined,
           versionCode: identity.versionCode,
           name,
           publishedAt,

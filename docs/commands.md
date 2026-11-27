@@ -3,6 +3,9 @@
 Tham chiếu đầy đủ cho `testflight` (alias `tf`). [README](../README.md) chỉ trình bày các luồng
 thường dùng; trang này liệt kê mọi lệnh, cờ và quy tắc ghi.
 
+Không cài toàn cục vẫn chạy được: thay `testflight` bằng `npx my-testflight-cli@latest`, ví dụ
+`npx my-testflight-cli@latest versions abis crm 1.4.2 --json`.
+
 Xem thêm: [Cấu hình](./configuration.md) · [CI, phát triển, xử lý sự cố](./operations.md).
 
 ## Global option
@@ -105,6 +108,7 @@ testflight apps create <appId> [--name <text>] [--package <name>]
 
 `appId` phải khớp `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. Không có `--name` thì server tạo tên từ id
 (`demo-app` → `Demo App`). `--icon` nhận PNG/JPEG/WebP ≤ 2 MiB và upload ngay sau khi tạo.
+Version name **không** dùng quy tắc app id; xem [Quy tắc version name](#quy-tắc-version-name).
 
 ```bash
 testflight apps create crm --name "Internal CRM" --package com.company.crm --icon ./icon.png
@@ -149,6 +153,20 @@ testflight versions <appId> <versionName>
 - `--published` đọc catalog công khai và bỏ bản nháp.
 - Hai positional → hiển thị chi tiết phiên bản (tương đương `versions get`).
 
+### Quy tắc version name
+
+Version name linh hoạt như Play Console, khác với app id:
+
+- 1–200 byte UTF-8; cho phép space, `+`, `()`, `[]`, `~`, `#` và Unicode
+  (`1.0.0+42`, `Bản nội bộ (beta)`).
+- Không bắt đầu/kết thúc bằng space hoặc dot; không phải `.`/`..`.
+- Không chứa `/`, `\`, NUL hay ký tự điều khiển C0/C1.
+- Tên được URL-encode trong path API, nên các lệnh `versions`, `download`, `release`, `publish`
+  dùng được nguyên văn, không cần tự encode.
+
+Tên không hợp lệ bị CLI từ chối với exit code `2`; server trả `400 version_name_invalid` nếu gọi
+thẳng API.
+
 ### `versions get`
 
 ```text
@@ -186,7 +204,8 @@ testflight versions create <appId> <versionName> --version-code <n>
 ```
 
 Tạo **bản nháp** không có APK. Bản nháp chỉ hiện trong catalog công khai sau khi có artifact đầu
-tiên; `release` làm bước này tự động.
+tiên; `release` làm bước này tự động. `<versionName>` theo
+[quy tắc version name](#quy-tắc-version-name), không phải quy tắc app id.
 
 ### `versions update`
 
@@ -255,7 +274,7 @@ Dùng endpoint mới `POST /api/v1/import`: server tự đọc APK, suy ABI và 
 | `--app-id <id>` | Id ứng dụng; mặc định là `packageName` trong APK |
 | `--create` | Tạo app nếu chưa tồn tại (mặc định trả 404) |
 | `--name <text>` | Tên hiển thị dùng khi `--create` |
-| `--version <name>` | Tên version; mặc định lấy từ APK |
+| `--version <name>` | Tên version linh hoạt (1–200 byte UTF-8); mặc định lấy từ APK. Nếu manifest dùng resource reference và không truyền cờ này, CLI **bỏ query `version`** để server resolve (fallback `String(versionCode)`) |
 | `--version-code <n>` | `versionCode`; mặc định lấy từ APK |
 | `--release-notes <text>` | Ghi chú phát hành |
 | `--notes-file <path>` | Đọc ghi chú từ file UTF-8 |
@@ -269,9 +288,11 @@ CLI kiểm tra **toàn bộ** APK trước khi gửi: mọi file phải cùng `p
 dừng với exit code `2` và **không tạo gì** trên server.
 
 Nếu bạn truyền `--version`/`--version-code` khác giá trị trong APK, CLI tự thêm
-`allow_mismatch=version`; giá trị `--allow-mismatch` của bạn được hợp nhất vào đó. Ghi chú dài hơn
-4 KiB không nhét vừa query string: CLI import trước, rồi gọi `PUT /versions/:v` để ghi ghi chú.
-Import chạy tuần tự từng APK và dừng ở lỗi đầu tiên.
+`allow_mismatch=version`; giá trị `--allow-mismatch` của bạn được hợp nhất vào đó. Khi manifest
+dùng resource reference cho `versionName` và bạn không truyền `--version`, CLI **không gửi query
+`version`**; server resolve tên (fallback `String(versionCode)`) và CLI in `versionNameSource:
+"server"`. Ghi chú dài hơn 4 KiB không nhét vừa query string: CLI import trước, rồi gọi
+`PUT /versions/:v` để ghi ghi chú. Import chạy tuần tự từng APK và dừng ở lỗi đầu tiên.
 
 ```bash
 # App id và version lấy từ APK, tạo app nếu chưa có
@@ -300,7 +321,7 @@ alias: testflight push ...
 
 | Option | Ý nghĩa |
 |---|---|
-| `--version <name>` | Tên version; mặc định lấy `versionName` từ APK đầu tiên |
+| `--version <name>` | Tên version linh hoạt (1–200 byte UTF-8); mặc định lấy `versionName` từ APK đầu tiên, fallback `String(versionCode)` khi manifest dùng resource reference |
 | `--version-code <n>` | Số nguyên dương; mặc định lấy `versionCode` từ APK đầu tiên |
 | `--abi <abi>` | Lặp lại được hoặc phân tách bằng dấu phẩy; một giá trị cho mỗi APK |
 | `--universal` | Ép một APK duy nhất thành `universal` |
@@ -358,7 +379,8 @@ Metadata trong APK là nguồn chân lý; tên file không được ghi đè man
 
 `--allow-mismatch` dùng khi bạn **chủ ý** thay đổi một trường, ví dụ app đã đổi package hoặc version
 đã publish với metadata khác APK. Giá trị được hợp nhất với các loại CLI tự suy ra và gửi cho mọi
-artifact, theo thứ tự `package,version,sdk,abi`.
+artifact, theo thứ tự `package,version,sdk,abi`. `package` là escape hatch cho API/CLI (dashboard
+không gửi); chỉ dùng khi thật sự muốn đổi package của app đã có artifact.
 
 ```bash
 # App "crm" đã có package com.other nhưng APK mang package mới
@@ -413,8 +435,10 @@ testflight download <appId> <versionName> [--abi <abi>] [--out <path>] [--force]
 | `-f, --force` | Ghi đè file đã tồn tại |
 | `--no-progress` | Ẩn thanh tiến trình |
 
-Đọc là public, không cần management key. Nếu server trả `X-Checksum-Sha256`, CLI tính SHA-256 khi
-tải và chỉ đổi tên file khi khớp; file hỏng bị xoá, file đích không bị thay.
+Đọc là public, không cần management key. `<versionName>` nhận tên linh hoạt
+(xem [quy tắc](#quy-tắc-version-name)); CLI URL-encode khi gọi API. Nếu server trả
+`X-Checksum-Sha256`, CLI tính SHA-256 khi tải và chỉ đổi tên file khi khớp; file hỏng bị xoá, file
+đích không bị thay.
 
 ```bash
 testflight download crm 1.4.2
@@ -437,6 +461,7 @@ testflight download crm 1.4.2 --abi arm64-v8a --out ./builds
 | `download` | `GET /api/v1/apps/:appId/versions/:version/download[?abi=]` |
 | `artifacts delete` | `DELETE .../artifacts/:abi` |
 
-Mã lỗi server được giữ nguyên trong thông báo, ví dụ `HTTP 409 version_exists` hoặc `HTTP 401
+Mã lỗi server được giữ nguyên trong thông báo, ví dụ `HTTP 409 version_exists`, `HTTP 409
+package_in_use`, `HTTP 409 package_locked`, `HTTP 400 version_name_invalid` hoặc `HTTP 401
 invalid_management_key`; CLI thêm gợi ý xử lý. Xem bảng lỗi ở
 [CI và xử lý sự cố](./operations.md#xử-lý-sự-cố).

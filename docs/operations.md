@@ -48,7 +48,9 @@ testflight doctor --json
 - [`ci.yml`](../.github/workflows/ci.yml): mọi push/PR → `typecheck`, test, build, smoke test trên
   Node 22 và 24.
 - [`publish.yml`](../.github/workflows/publish.yml): push tag `v*` → kiểm tra tag khớp
-  `package.json` → test/build → `npm publish --provenance` → tạo GitHub Release.
+  `package.json` → typecheck/test/build → `npm publish --provenance --access public
+  --ignore-scripts` → tạo GitHub Release. `--ignore-scripts` tránh chạy `prepublishOnly` lần thứ
+  hai trên cùng cây nguồn.
 
 Phát hành phiên bản mới:
 
@@ -89,6 +91,12 @@ node dist/cli.js --help
 - `test/apk-manifest.test.ts` kiểm tra parser: fixture thật, stored/deflate, UTF-8/UTF-16,
   reference `versionName`, codename SDK (→ null), config split, ZIP64, manifest hỏng và giới hạn
   16 MiB/8 MiB.
+- `test/validate.test.ts` khoá quy tắc version name: `1.0.0+42`, `Bản nội bộ (beta)`, space/Unicode
+  được chấp nhận; `/`, `\`, NUL, control, space/dot đầu-cuối và tên > 200 byte bị từ chối.
+- Upload stream (`src/api.ts`): khi server trả non-2xx, CLI đọc body lỗi **trước khi** destroy
+  request stream, nên `toApiError` vẫn thấy `{ error: { code } }` thay vì fallback `http_<status>`.
+  Regression: server trả 422 trước khi đọc body (multi-MB) và hai upload tuần tự trên cùng
+  keep-alive connection, lặp 4 lần.
 
 ```text
 TestFlightCLI/
@@ -112,6 +120,9 @@ TestFlightCLI/
 | `HTTP 401 invalid_management_key` | Key sai hoặc đã đổi. Chạy lại `testflight login`; server đọc key mới ngay, không cần restart. |
 | `HTTP 503 management_key_not_configured` | Server chưa có `data/config.json`; khởi động server một lần. |
 | `HTTP 409 version_exists` | Version đã tồn tại; dùng `--version` mới hoặc `--force`. |
+| `HTTP 409 package_in_use` | Package Android đã thuộc app khác. Dùng package khác, hoặc sửa package của app kia trước. |
+| `HTTP 409 package_locked` | App đã có APK nên không đổi package được. Xoá version của app, hoặc tạo app id mới. |
+| `HTTP 400 version_name_invalid` | Version name chứa `/`, `\`, NUL/control, space hoặc dot ở đầu/cuối, là `.`/`..`, hoặc dài quá 200 byte UTF-8. Space thường, `+`, `()` và Unicode vẫn hợp lệ. |
 | `HTTP 413 payload_too_large` | APK vượt `MAX_APK_BYTES` của server (mặc định 512 MiB) hoặc icon > 2 MiB. |
 | `HTTP 400 invalid_apk` | File không phải ZIP/APK, thiếu hoặc hỏng `AndroidManifest.xml`, dùng ZIP64, hoặc là config split. Kiểm tra bằng `testflight apk inspect <file>`. |
 | `HTTP 422 apk_metadata_mismatch` | Package/version/minSdk/ABI trong APK lệch app/version đích. Sửa build, hoặc thêm `--allow-mismatch package,version,sdk,abi` khi thật sự chủ ý. |

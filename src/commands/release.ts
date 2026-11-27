@@ -41,6 +41,7 @@ import {
   parseOptionalMinSdk,
   parsePublishedAt,
   requireId,
+  requireVersionName,
   resolveReleaseNotes,
   type CommandClient,
 } from "./common.js";
@@ -147,7 +148,9 @@ export async function runRelease(argv: string[]): Promise<number> {
   }
 
   const versionNameRaw = stringValue(values, "version");
-  if (versionNameRaw !== undefined) requireId(versionNameRaw, "version name", "testflight release");
+  if (versionNameRaw !== undefined) {
+    requireVersionName(versionNameRaw, "version name", "testflight release <appId> <apk...>");
+  }
   const versionCodeRaw = stringValue(values, "version-code");
 
   let abiFlags = expandCsv(listValue(values, "abi"));

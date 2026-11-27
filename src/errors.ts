@@ -56,6 +56,12 @@ export function apiErrorHint(error: ApiError): string | undefined {
       return "The app has no icon yet.";
     case "app_exists":
       return "Use `testflight apps update <appId>` to change it.";
+    case "package_in_use":
+      return "Another app already uses this Android package. Pick a different package, or update the other app first.";
+    case "package_locked":
+      return "An app that already has uploaded APKs cannot change package. Delete its versions first, or use a new app id.";
+    case "version_name_invalid":
+      return "Use 1-200 UTF-8 bytes with no path separators (/ or \\), control characters, or leading/trailing spaces and dots. Spaces, '+', parentheses and Unicode are allowed.";
     case "version_exists":
       return "Re-run with --force to replace the existing version, or publish a new --version.";
     case "payload_too_large":
